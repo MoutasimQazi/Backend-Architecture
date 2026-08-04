@@ -252,7 +252,7 @@ class Router:
                 faq_id=c.faq_id,
                 score=c.score,
                 matched_surface=c.matched_surface,
-                stage=RouteStage.S2_EMBEDDING,
+                stage=RouteStage.S2_RETRIEVAL,
                 item=c.item,
             )
             for c in candidates
@@ -267,7 +267,7 @@ class Router:
             RouteDecision(
                 label=RouteLabel.FAQ,
                 confidence=top.score,
-                stage=RouteStage.S2_EMBEDDING,
+                stage=RouteStage.S2_RETRIEVAL,
                 rationale=f"hybrid {top.score:.2f} >= tau {threshold:.2f} ({arms})",
                 category=category,
                 fallbacks=[RouteLabel.PERSONAL],

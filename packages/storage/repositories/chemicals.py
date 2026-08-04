@@ -39,10 +39,21 @@ class ChemicalRepository:
 
     def by_synonym_hash(self, hashes: list[str]) -> dict[str, tuple[str, str]]:
         """hash -> (chemical_id, kind). Batched: a 30-ingredient panel should
-        cost one query, not thirty."""
+        cost one query, not thirty.
+
+        Cached per KB version, including misses — most panels are mostly the
+        same substances, and an ingredient the KB does not know is the most
+        repeated lookup there is.
+        """
         if not hashes:
             return {}
 
+        from packages.product.chem_cache import cached_synonyms
+
+        cached = cached_synonyms(self.session, hashes, self._load_synonym_hashes)
+        return {k: tuple(v) for k, v in cached.items()}  # type: ignore[misc]
+
+    def _load_synonym_hashes(self, hashes: list[str]) -> dict[str, tuple[str, str]]:
         placeholders = ", ".join(f":h{i}" for i in range(len(hashes)))
         params = {f"h{i}": h for i, h in enumerate(hashes)}
         rows = self.session.execute(
@@ -115,8 +126,19 @@ class ChemicalRepository:
     # -- dossiers ---------------------------------------------------------
 
     def get_many(self, chemical_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Dossiers by id, cached per KB version.
+
+        The heaviest repeated read in a scan: every resolved ingredient needs
+        its dossier, and the same substances recur across products.
+        """
         if not chemical_ids:
             return {}
+
+        from packages.product.chem_cache import cached_dossiers
+
+        return cached_dossiers(self.session, chemical_ids, self._load_dossiers)
+
+    def _load_dossiers(self, chemical_ids: list[str]) -> dict[str, dict[str, Any]]:
         placeholders = ", ".join(f":c{i}" for i in range(len(chemical_ids)))
         params = {f"c{i}": cid for i, cid in enumerate(chemical_ids)}
         rows = self.session.execute(
@@ -275,6 +297,14 @@ class ChemicalRepository:
     # -- writes (used by the ETL and the seed script) ---------------------
 
     def upsert_chemical(self, **fields: Any) -> None:
+    # Any write makes the in-process chemical cache stale. Invalidating here,
+    # at the write itself, means a scan running moments later cannot be served
+    # a hazard dossier that has just been corrected — which is the one kind of
+    # stale read this system must never do.
+        from packages.product.chem_cache import invalidate
+
+        invalidate()
+
         self.session.execute(
             text(
                 """
@@ -319,6 +349,14 @@ class ChemicalRepository:
         )
 
     def add_synonym(self, chemical_id: str, synonym: str, kind: str = "synonym") -> None:
+    # Any write makes the in-process chemical cache stale. Invalidating here,
+    # at the write itself, means a scan running moments later cannot be served
+    # a hazard dossier that has just been corrected — which is the one kind of
+    # stale read this system must never do.
+        from packages.product.chem_cache import invalidate
+
+        invalidate()
+
         normalised = normalise_ingredient(synonym)
         if not normalised:
             return
@@ -340,6 +378,14 @@ class ChemicalRepository:
         )
 
     def add_assertion(self, chemical_id: str, domain: str, key_name: str, **fields: Any) -> None:
+    # Any write makes the in-process chemical cache stale. Invalidating here,
+    # at the write itself, means a scan running moments later cannot be served
+    # a hazard dossier that has just been corrected — which is the one kind of
+    # stale read this system must never do.
+        from packages.product.chem_cache import invalidate
+
+        invalidate()
+
         self.session.execute(
             text(
                 """

@@ -208,6 +208,23 @@ class ModelSettings:
         default_factory=lambda: _env("HF_LARGE_MODEL", "meta-llama/Llama-3.3-70B-Instruct")
     )
 
+    # Embeddings are OFF. Retrieval is lexical: InnoDB FULLTEXT with
+    # MATCH…AGAINST, plus the resolver's exact/CAS/synonym/OCR-variant/edit-
+    # distance ladder. No external embedding service is called, so there is no
+    # entitlement to keep valid, no vector dimension to keep in sync, and no
+    # third-party outage that can slow a scan down.
+    #
+    # This is a measured trade, not a compromise: the golden sets ran with no
+    # embeddings and still cleared their gates — router 25/26 against 85%,
+    # faq_retrieval 10/11 against 80%. What is lost is paraphrase matching on
+    # questions sharing no words with any FAQ; those fall through to the S4
+    # classifier, which costs a fraction of a cent.
+    #
+    # Setting EMBEDDING_PROVIDER=openai re-enables the vector leg. Nothing else
+    # is wired, and the stored-vector columns stay NULL until a backfill runs.
+    embedding_provider: str = field(
+        default_factory=lambda: _env("EMBEDDING_PROVIDER", "none").strip().lower()
+    )
     embedding_model: str = field(
         default_factory=lambda: _env("EMBEDDING_MODEL", "text-embedding-3-small")
     )
@@ -219,6 +236,18 @@ class ModelSettings:
     @property
     def any_configured(self) -> bool:
         return bool(self.openai_api_key or self.deepseek_api_key or self.hf_token)
+
+    @property
+    def vector_search_enabled(self) -> bool:
+        """False means lexical-only retrieval — a supported mode, not a fault.
+
+        Callers check this instead of calling `embed()` and handling the
+        failure, so a deployment without embeddings does no network work and
+        logs no warnings on the hot path.
+        """
+        if self.embedding_provider in ("none", "off", "disabled", ""):
+            return False
+        return bool(self.openai_api_key)
 
 
 @dataclass(frozen=True)

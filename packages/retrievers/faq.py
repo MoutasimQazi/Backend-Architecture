@@ -121,7 +121,7 @@ class FaqRetriever:
             RetrievedFaq(
                 faq_id=faq_id,
                 score=rrf_score,
-                stage=RouteStage.S2_EMBEDDING,
+                stage=RouteStage.S2_RETRIEVAL,
                 matched_surface=items[faq_id].canonical_question if faq_id in items else "",
                 item=items.get(faq_id),
                 lexical_rank=lexical_rank.get(faq_id),
@@ -186,6 +186,6 @@ class FaqRetriever:
 
         candidates = self.hybrid(question, locale, top_k=RERANK_DEPTH)
         if not candidates:
-            return [], RouteStage.S2_EMBEDDING
+            return [], RouteStage.S2_RETRIEVAL
 
-        return self.rerank(question, candidates)[:top_k], RouteStage.S2_EMBEDDING
+        return self.rerank(question, candidates)[:top_k], RouteStage.S2_RETRIEVAL

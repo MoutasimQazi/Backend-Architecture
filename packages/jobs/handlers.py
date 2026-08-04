@@ -124,6 +124,107 @@ def summarise_memory(ctx: JobContext) -> dict[str, Any]:
     }
 
 
+@handler(JobType.PROFILE_CAPTURE)
+def capture_profile(ctx: JobContext) -> dict[str, Any]:
+    """Store health, fitness and preference facts the user stated in chat.
+
+    Runs off the critical path: the turn is already answered by the time this
+    executes, so the user never waits on bookkeeping. Idempotent per turn.
+
+    Consent is checked per destination, not once at the top — someone may have
+    granted PROFILE but not VITALS, and that must mean "remember my allergy,
+    do not record my weight" rather than all-or-nothing.
+    """
+    from packages.chains.capture import HealthCaptureChain, normalise_metric
+    from packages.chains.providers import is_configured
+    from packages.domain.enums import ConsentScope
+    from packages.storage.repositories.conversation import ConversationRepository
+    from packages.storage.repositories.health import HealthRepository
+    from packages.storage.repositories.users import UserRepository
+
+    user_id = ctx.payload.get("user_id") or ctx.user_id
+    if not user_id:
+        raise ValueError("profile_capture requires user_id")
+
+    if not is_configured():
+        return {"status": "skipped", "reason": "no model provider configured"}
+
+    consent = UserRepository(ctx.session).get_consent(user_id)
+    granted = set(consent.granted_scopes)
+    may_write_vitals = ConsentScope.VITALS in granted
+    may_write_profile = ConsentScope.PROFILE in granted
+
+    if not (may_write_vitals or may_write_profile):
+        return {"status": "skipped", "reason": "no consent for vitals or profile"}
+
+    session_id = ctx.payload.get("session_id")
+    messages = ctx.payload.get("messages")
+    if not messages and session_id:
+        turns = ConversationRepository(ctx.session).recent_turns(session_id, user_id, limit=8)
+        messages = [{"role": t["role"], "content": t["content"] or ""} for t in turns]
+    if not messages:
+        return {"status": "skipped", "reason": "no messages"}
+
+    captured = HealthCaptureChain().capture(messages)
+
+    health = HealthRepository(ctx.session, user_id)
+    conversation = ConversationRepository(ctx.session)
+    written = {"metrics": 0, "preferences": 0, "dropped": 0}
+    added_medical: dict[str, list[str]] = {}
+
+    if may_write_vitals:
+        for metric in captured.metrics:
+            if metric.confidence < 0.6:
+                written["dropped"] += 1
+                continue
+            normalised = normalise_metric(metric.metric, metric.value, metric.unit)
+            if normalised is None:
+                written["dropped"] += 1
+                continue
+            value, unit = normalised
+            health.record_metric(metric.metric, value, unit, source="chat")
+            written["metrics"] += 1
+
+    if may_write_profile:
+        medical = captured.medical
+        added_medical = health.merge_medical(
+            allergies=medical.allergies,
+            conditions=medical.conditions,
+            medications=medical.medications,
+            source="chat",
+        )
+        if medical.pregnancy_status and medical.pregnancy_status != "none":
+            UserRepository(ctx.session).upsert_profile(
+                user_id, pregnancy_status=medical.pregnancy_status
+            )
+
+        for preference in captured.preferences:
+            if preference.confidence < 0.6:
+                written["dropped"] += 1
+                continue
+            conversation.remember(
+                user_id,
+                preference.kind,
+                preference.value,
+                confidence=preference.confidence,
+                source_turn_id=ctx.payload.get("turn_id"),
+            )
+            written["preferences"] += 1
+
+    # What the assistant knows about this user changed, so anything it said
+    # earlier from the old context may no longer be the right answer.
+    if written["metrics"] or written["preferences"] or any(added_medical.values()):
+        CacheRepository(ctx.session).invalidate_scope(user_id)
+
+    return {
+        "user_id": user_id,
+        "metrics": written["metrics"],
+        "preferences": written["preferences"],
+        "dropped": written["dropped"],
+        "medical_added": {k: v for k, v in added_medical.items() if v},
+    }
+
+
 @handler(JobType.CHEMICAL_RESEARCH)
 def research_chemical(ctx: JobContext) -> dict[str, Any]:
     """arch.md 8.4: an unknown ingredient enqueues here rather than blocking

@@ -21,6 +21,7 @@ python-dotenv>=1.0
 PyJWT>=2.8
 
 numpy>=1.26                      # cosine similarity over the embedding blobs
+openpyxl>=3.1                    # scripts/import_faq.py reads the predefined-FAQ .xlsx
 
 # Model providers. The OpenAI SDK also drives DeepSeek and the HF router via
 # their OpenAI-compatible base URLs.

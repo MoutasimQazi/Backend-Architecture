@@ -70,9 +70,18 @@ PRICING: dict[str, tuple[float, float]] = {
 # system would have returned nothing on exactly the ambiguous messages it
 # exists to classify. Budgets are therefore given reasoning headroom here
 # rather than being re-tuned by hand at every call site.
+# Headroom is a MULTIPLIER, not a flat addition. The reasoning phase scales
+# with how hard the question is, so a fixed +512 that suits the router is far
+# too little for product synthesis: the explain chain asks for 1200, spent all
+# 1712 on reasoning, produced nothing, and had to be retried at 3424 — a whole
+# wasted generation, ~20s, on every scan.
+#
+# Over-provisioning is close to free: you are billed for tokens generated, not
+# for the ceiling. Under-provisioning costs a full extra round trip. So the
+# ceiling is set generously and deliberately.
 _REASONING_MODELS = {"deepseek-v4-flash"}
-_REASONING_HEADROOM = 512
-_MIN_REASONING_BUDGET = 768
+_REASONING_MULTIPLIER = 3
+_MIN_REASONING_BUDGET = 2048
 
 # deepseek-v4-pro is deliberately not used by this deployment. It is blocked
 # rather than merely left unconfigured so that a stray env var or an explicit
@@ -162,6 +171,27 @@ class _CircuitBreaker:
 _breakers: dict[str, _CircuitBreaker] = {}
 _clients: dict[str, Any] = {}
 _lock = threading.Lock()
+
+
+def _is_permanent(exc: Exception) -> bool:
+    """True when retrying cannot possibly help.
+
+    A bad key, a project without access to a model, or a model name that does
+    not exist returns the same error however many times it is asked. Retrying
+    those three times with exponential backoff turns a configuration mistake
+    into ~12 seconds of dead time on every single call — which is exactly what
+    a 403 'project does not have access to text-embedding-3-small' did to the
+    ingredient resolver, once per unresolved ingredient.
+
+    429 and 5xx are deliberately NOT permanent: those are the ones backoff is
+    actually for.
+    """
+    status_code = getattr(exc, "status_code", None) or getattr(exc, "http_status", None)
+    if status_code in (400, 401, 403, 404):
+        return True
+    # The SDK sometimes wraps the status in a response object instead.
+    response = getattr(exc, "response", None)
+    return getattr(response, "status_code", None) in (400, 401, 403, 404)
 
 
 def _breaker(provider: str) -> _CircuitBreaker:
@@ -279,7 +309,7 @@ def _budget_for(model_name: str, requested: int) -> int:
     """
     if model_name not in _REASONING_MODELS:
         return requested
-    return max(requested + _REASONING_HEADROOM, _MIN_REASONING_BUDGET)
+    return max(requested * _REASONING_MULTIPLIER, _MIN_REASONING_BUDGET)
 
 
 def is_configured() -> bool:
@@ -383,6 +413,17 @@ def complete(
 
             except Exception as exc:
                 last_error = exc
+                if _is_permanent(exc):
+                    # Wrong key or a model this account cannot call. Move to
+                    # the next provider now rather than sleeping twice first.
+                    logger.error(
+                        "%s rejected '%s' permanently (%s); trying the next provider",
+                        candidate,
+                        provider_model,
+                        exc,
+                    )
+                    break
+
                 logger.warning(
                     "%s attempt %d/%d failed: %s",
                     candidate,
@@ -404,9 +445,18 @@ def embed(texts: list[str], *, model: Optional[str] = None) -> list[list[float]]
         return []
 
     settings = get_settings().models
+
+    if not settings.vector_search_enabled:
+        # Not an error condition — retrieval is lexical-only by configuration.
+        # Raised rather than returning empty so a caller that forgot to check
+        # `vector_search_enabled` fails loudly in tests instead of silently
+        # scoring every candidate as identical.
+        raise ProviderError(
+            "vector search is disabled (EMBEDDING_PROVIDER=none); retrieval is lexical-only"
+        )
+
     resolved = model or settings.embedding_model
 
-    # Only OpenAI serves the embedding models this system is configured for.
     if not settings.openai_api_key:
         raise ProviderError("embeddings require OPENAI_API_KEY")
 
@@ -421,6 +471,20 @@ def embed(texts: list[str], *, model: Optional[str] = None) -> list[list[float]]
             breaker.record_success()
             return [item.embedding for item in response.data]
         except Exception as exc:
+            if _is_permanent(exc):
+                # Open the breaker so the rest of this request — and the next
+                # ones — fail instantly instead of repeating the same 3-second
+                # rejection for every ingredient on the label.
+                breaker.record_failure()
+                breaker.record_failure()
+                breaker.record_failure()
+                logger.error(
+                    "embeddings are unavailable and retrying will not help: %s. "
+                    "Vector search is disabled until this is fixed.",
+                    exc,
+                )
+                raise ProviderError(f"embedding rejected: {exc}") from exc
+
             logger.warning("embedding attempt %d failed: %s", attempt + 1, exc)
             if attempt < settings.max_retries:
                 time.sleep(min(2**attempt, 8))

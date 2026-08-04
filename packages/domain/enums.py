@@ -33,7 +33,12 @@ class RouteStage(StrEnum):
 
     S0_RULES = "S0_RULES"
     S1_EXACT = "S1_EXACT"
-    S2_EMBEDDING = "S2_EMBEDDING"
+    # S2 is hybrid retrieval: FULLTEXT plus, when enabled, vectors. The value
+    # stays "S2_EMBEDDING" so historic trace rows keep their meaning, but the
+    # name says RETRIEVAL — with embeddings off it is a pure lexical match, and
+    # a stage labelled "embedding" in a trace sent people looking for a vector
+    # search that never ran.
+    S2_RETRIEVAL = "S2_EMBEDDING"
     S3_SEMANTIC_CACHE = "S3_SEMANTIC_CACHE"
     S4_LLM = "S4_LLM"
     FALLBACK = "FALLBACK"
@@ -153,6 +158,7 @@ class JobType(StrEnum):
     DEEP_RESEARCH = "deep_research"
     RESTAURANT_INVESTIGATION = "restaurant_investigation"
     MEMORY_SUMMARISE = "memory_summarise"
+    PROFILE_CAPTURE = "profile_capture"
     CONTEXT_AGGREGATE = "context_aggregate"
     ETL_CHEMICAL_KB = "etl_chemical_kb"
     EMBEDDING_BACKFILL = "embedding_backfill"

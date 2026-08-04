@@ -32,9 +32,19 @@ _query_cache = LruCache(max_entries=2048, ttl_seconds=900)
 BATCH_SIZE = 96
 
 
+def vector_search_enabled() -> bool:
+    """Whether retrieval has a vector leg at all. Cheap; read it per call."""
+    return get_settings().models.vector_search_enabled
+
+
 def embed_query(text_value: str) -> Optional[list[float]]:
     """Embed one query string, cached. Returns None if embeddings are down —
     callers fall back to lexical retrieval rather than failing the turn."""
+    # Checked before any work: on a lexical-only deployment this is every
+    # single turn, and it should cost nothing and say nothing.
+    if not vector_search_enabled():
+        return None
+
     normalised = normalise_question(text_value)
     if not normalised:
         return None
@@ -62,6 +72,9 @@ def embed_many(texts: list[str]) -> list[Optional[list[float]]]:
     if not texts:
         return []
 
+    if not vector_search_enabled():
+        return [None] * len(texts)
+
     out: list[Optional[list[float]]] = []
     for start in range(0, len(texts), BATCH_SIZE):
         chunk = texts[start : start + BATCH_SIZE]
@@ -75,6 +88,11 @@ def embed_many(texts: list[str]) -> list[Optional[list[float]]]:
 
 # -- backfills --------------------------------------------------------------
 
+# Reported instead of {"failed": N}: with vector search off there is nothing
+# to do and nothing wrong, and a worker logging thousands of "failures" every
+# run is how real failures stop being noticed.
+_DISABLED_RESULT = {"pending": 0, "embedded": 0, "failed": 0, "disabled": 1}
+
 
 def backfill_faq_surfaces(session: Session, limit: int = 500) -> dict[str, int]:
     """Embed FAQ surface forms that have none.
@@ -82,6 +100,9 @@ def backfill_faq_surfaces(session: Session, limit: int = 500) -> dict[str, int]:
     Idempotent and resumable: it only selects rows where `embedding IS NULL`,
     so an interrupted run continues where it stopped.
     """
+    if not vector_search_enabled():
+        return dict(_DISABLED_RESULT)
+
     settings = get_settings().models
     rows = session.execute(
         sql("SELECT id, surface_text FROM faq_surface WHERE embedding IS NULL LIMIT :lim"),
@@ -123,6 +144,9 @@ def backfill_faq_surfaces(session: Session, limit: int = 500) -> dict[str, int]:
 
 def backfill_chemical_synonyms(session: Session, limit: int = 500) -> dict[str, int]:
     """Embed chemical synonyms for the resolver's nearest-neighbour stage."""
+    if not vector_search_enabled():
+        return dict(_DISABLED_RESULT)
+
     settings = get_settings().models
     rows = session.execute(
         sql("SELECT id, synonym FROM chemical_synonym WHERE embedding IS NULL LIMIT :lim"),
@@ -152,6 +176,9 @@ def backfill_chemical_synonyms(session: Session, limit: int = 500) -> dict[str, 
 
 
 def backfill_evidence_chunks(session: Session, limit: int = 200) -> dict[str, int]:
+    if not vector_search_enabled():
+        return dict(_DISABLED_RESULT)
+
     settings = get_settings().models
     rows = session.execute(
         sql("SELECT id, chunk_text FROM evidence_chunk WHERE embedding IS NULL LIMIT :lim"),

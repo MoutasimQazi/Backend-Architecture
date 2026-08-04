@@ -295,7 +295,11 @@ class HealthRepository:
             text(
                 "SELECT report_date, bmi, systolic, diastolic, hba1c, lipids, flags, "
                 "       conditions, allergies, medications "
-                "FROM medical_report WHERE user_id = :uid ORDER BY report_date DESC LIMIT 1"
+                # id DESC breaks ties: several rows can share a report_date,
+                # and without it "latest" was whichever the engine happened to
+                # return first.
+                "FROM medical_report WHERE user_id = :uid "
+                "ORDER BY report_date DESC, id DESC LIMIT 1"
             ),
             {"uid": self.user_id},
         ).mappings().first()
@@ -318,6 +322,137 @@ class HealthRepository:
             allergies=_loads(row["allergies"]) or [],
             medications=_loads(row["medications"]) or [],
         )
+
+    # -- writes from conversation -----------------------------------------
+    #
+    # Everything else in this repository reads. These two exist so facts a user
+    # states in chat reach the same tables the client's `sync` writes to —
+    # otherwise "I'm allergic to peanuts" lives only in the transcript and the
+    # scanner never sees it.
+
+    def record_metric(
+        self,
+        metric: str,
+        value: float,
+        unit: Optional[str] = None,
+        *,
+        measured_on: Optional[date] = None,
+        source: str = "chat",
+    ) -> None:
+        """Write one measurement, tagged with where it came from.
+
+        `source` is part of the table's unique key, so a value the user
+        mentioned in conversation never overwrites the same day's reading from
+        a wearable. Both are kept and the reader can prefer the device.
+        """
+        self.session.execute(
+            text(
+                """
+                INSERT INTO health_metric (user_id, metric, measured_on, value, unit, source)
+                VALUES (:uid, :m, :d, :v, :u, :src)
+                ON DUPLICATE KEY UPDATE value = VALUES(value), unit = VALUES(unit)
+                """
+            ),
+            {
+                "uid": self.user_id,
+                "m": metric[:64],
+                "d": measured_on or date.today(),
+                "v": value,
+                "u": (unit or None),
+                "src": source[:64],
+            },
+        )
+
+    def merge_medical(
+        self,
+        *,
+        allergies: Optional[list[str]] = None,
+        conditions: Optional[list[str]] = None,
+        medications: Optional[list[str]] = None,
+        source: str = "chat",
+    ) -> dict[str, list[str]]:
+        """Union new medical facts into today's report. Returns what was added.
+
+        ADDITIVE ONLY, and deliberately so. This is fed by a language model
+        reading free text, and a model that mis-parses "I'm not allergic to
+        shellfish any more" must not be able to delete a safety flag that the
+        product scanner depends on. Removing an allergy stays a deliberate user
+        action through the profile UI, never an inference.
+
+        Matching is case-insensitive so "Peanuts" does not become a second
+        entry beside "peanuts".
+        """
+        current = self.latest_medical()
+        added: dict[str, list[str]] = {"allergies": [], "conditions": [], "medications": []}
+
+        merged = {
+            "allergies": list(current.allergies),
+            "conditions": list(current.conditions),
+            "medications": list(current.medications),
+        }
+
+        for field_name, incoming in (
+            ("allergies", allergies),
+            ("conditions", conditions),
+            ("medications", medications),
+        ):
+            if not incoming:
+                continue
+            seen = {v.strip().lower() for v in merged[field_name]}
+            for raw in incoming:
+                value = " ".join(str(raw).split())[:128]
+                if not value or value.lower() in seen:
+                    continue
+                merged[field_name].append(value)
+                added[field_name].append(value)
+                seen.add(value.lower())
+
+        if not any(added.values()):
+            return added
+
+        today = date.today()
+        params = {
+            "cond": json.dumps(merged["conditions"]),
+            "alg": json.dumps(merged["allergies"]),
+            "med": json.dumps(merged["medications"]),
+            # Provenance travels with the row: a clinician-entered allergy and
+            # one inferred from chat should not look identical later.
+            "flags": json.dumps([f"source:{source}"]),
+        }
+
+        # `medical_report` has no unique key on (user_id, report_date), so an
+        # upsert would silently insert a duplicate row for today every time
+        # someone mentions a condition. Find today's row and update it in
+        # place; insert only when there is none.
+        existing_id = self.session.execute(
+            text(
+                "SELECT id FROM medical_report WHERE user_id = :uid AND report_date = :d "
+                "ORDER BY id DESC LIMIT 1"
+            ),
+            {"uid": self.user_id, "d": today},
+        ).scalar()
+
+        if existing_id is not None:
+            self.session.execute(
+                text(
+                    "UPDATE medical_report SET conditions = :cond, allergies = :alg, "
+                    "medications = :med, flags = :flags WHERE id = :rid"
+                ),
+                {**params, "rid": existing_id},
+            )
+        else:
+            self.session.execute(
+                text(
+                    """
+                    INSERT INTO medical_report
+                        (user_id, report_date, conditions, allergies, medications, flags)
+                    VALUES (:uid, :d, :cond, :alg, :med, :flags)
+                    """
+                ),
+                {**params, "uid": self.user_id, "d": today},
+            )
+
+        return added
 
     # -- precomputed aggregates (arch.md 6.1) -----------------------------
 

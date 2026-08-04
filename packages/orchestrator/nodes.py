@@ -127,6 +127,8 @@ def context_build(state: ConversationState, session: Session) -> ConversationSta
         _apply_section(context, section, _build_live(health, section))
         context.meta[section] = SectionMeta(completeness=0.5, version="0")
 
+    _ensure_safety_facts(context, health, state)
+
     derived = health.get_aggregate("derived")
     if derived is not None:
         payload, meta = derived
@@ -144,6 +146,59 @@ def context_build(state: ConversationState, session: Session) -> ConversationSta
 
     state.context = context
     return state
+
+
+def _ensure_safety_facts(
+    context: UserContext, health: HealthRepository, state: ConversationState
+) -> None:
+    """Guarantee allergies, conditions and medications are present and current.
+
+    Two ways they were being lost, both of which end with a product scan
+    failing to warn someone about an ingredient they react to:
+
+    1. CONSENT. The whole `medical` section is gated on ConsentScope.LABS,
+       because it also carries lab values. But an allergy is not a lab result —
+       it is a safety fact, and gating it behind lab-sharing meant a user who
+       granted PROFILE but declined LABS had their declared peanut allergy
+       withheld from the scanner that exists to protect them. Lab VALUES stay
+       behind LABS; the safety fields are available under PROFILE.
+
+    2. STALENESS. Sections are served from precomputed aggregates. An allergy
+       captured from conversation two minutes ago is not in yesterday's
+       aggregate, so the scan ran against an allergy list that did not include
+       it. Safety fields are therefore read live — one indexed row — rather
+       than waiting for the aggregate job.
+
+    Union, never replace: whatever the aggregate already had is kept.
+    """
+    if not state.consent.allows(ConsentScope.PROFILE):
+        return
+
+    try:
+        live = health.latest_medical()
+    except Exception:
+        logger.exception("could not read live medical facts for %s", state.request.user_id)
+        return
+
+    for field_name in ("allergies", "conditions", "medications"):
+        existing = list(getattr(context.medical, field_name, None) or [])
+        seen = {v.strip().lower() for v in existing}
+        for value in getattr(live, field_name, None) or []:
+            if value and value.strip().lower() not in seen:
+                existing.append(value)
+                seen.add(value.strip().lower())
+        setattr(context.medical, field_name, existing)
+
+    # The section may have been marked withheld for lack of LABS consent; it is
+    # no longer empty, and the caller's completeness reporting should say so.
+    meta = context.meta.get("medical")
+    if meta is not None and meta.withheld and any(
+        getattr(context.medical, f, None) for f in ("allergies", "conditions", "medications")
+    ):
+        meta.withheld_reason = (
+            "lab values withheld (consent scope 'labs' not granted); "
+            "safety facts included"
+        )
 
 
 def _apply_section(context: UserContext, section: str, payload: dict) -> None:
@@ -872,4 +927,40 @@ def persist(state: ConversationState, session: Session) -> ConversationState:
         tokens_out=sum(c.completion_tokens for c in state.telemetry.token_costs),
         cost_usd=state.telemetry.total_usd,
     )
+
+    _enqueue_profile_capture(state, session)
     return state
+
+
+def _enqueue_profile_capture(state: ConversationState, session: Session) -> None:
+    """Queue background capture of health facts the user just stated.
+
+    Gated by a cheap regex first (`may_contain_profile_data`) so a greeting
+    does not put an LLM call behind every turn — only messages that actually
+    look like a first-person statement about something concrete get a job.
+
+    Idempotent on turn_id: a retried request cannot enqueue the work twice.
+    Never allowed to fail the turn — the answer has already been produced, and
+    losing a background capture is not worth turning a good response into a
+    500.
+    """
+    from packages.chains.capture import may_contain_profile_data
+
+    if not may_contain_profile_data(state.input.text):
+        return
+
+    try:
+        JobRepository(session).enqueue(
+            JobType.PROFILE_CAPTURE,
+            {
+                "user_id": state.request.user_id,
+                "session_id": state.request.session_id,
+                "turn_id": state.request.turn_id,
+                "messages": [{"role": "user", "content": state.input.text}],
+            },
+            user_id=state.request.user_id,
+            priority=200,  # behind anything the user is waiting on
+            idempotency_key=f"capture:{state.request.turn_id}",
+        )
+    except Exception:
+        logger.exception("could not enqueue profile capture for turn %s", state.request.turn_id)

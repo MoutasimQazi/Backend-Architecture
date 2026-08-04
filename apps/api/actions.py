@@ -456,6 +456,18 @@ def handle_scan(body: dict, principal: Principal, session: Session) -> dict[str,
 @action("consent")
 def handle_consent(body: dict, principal: Principal, session: Session) -> dict[str, Any]:
     users = UserRepository(session)
+
+    # Every user-scoped table has a foreign key to app_user, and until now that
+    # row was only created by the chat path and by `sync`. A freshly issued
+    # token calling `consent` first — which is the natural onboarding order,
+    # since consent should precede sending any data — failed on the foreign
+    # key. Ensuring the row here makes consent-before-data work.
+    users.upsert(
+        principal.user_id,
+        locale=body.get("locale") or "en",
+        jurisdiction=body.get("jurisdiction") or "IN",
+    )
+
     op = str(body.get("op") or "list")
 
     if op == "list":
