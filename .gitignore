@@ -1,28 +1,37 @@
+# NOTE ON ANCHORING
+# A pattern without a leading slash matches at ANY depth. `jobs/` therefore
+# excluded packages/jobs/ as well as the root jobs/ folder it was meant for,
+# which silently kept the job registry out of every push. Anything meant to
+# match only at the repo root is anchored with a leading slash. Check with:
+#   git check-ignore -v <path>
+
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 
+# Virtualenvs — safe unanchored; no source directory is ever called these.
 .venv/
 venv/
-env/
+/env/
 
+# Secrets. .env.example is the committed template and must survive.
 .env
 .env.*
 !.env.example
 
-build/
-dist/
+/build/
+/dist/
 *.egg-info/
 
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 
-instance/
+/instance/
 *.sqlite3
 
-# uploaded blobs and OCR artefacts — never in git
-var/
-jobs/
+# Runtime artefacts — root only. `packages/jobs/` is SOURCE and must be committed.
+/var/
+/jobs/
 *.log
