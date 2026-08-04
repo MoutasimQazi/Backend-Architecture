@@ -283,11 +283,24 @@ class ChemicalRepository:
                 VALUES (:chemical_id, :inci_name, :display_name, :cas, :ec, :e_number,
                         :formula, :chem_class, :functions, :kb_version, :review_status)
                 ON DUPLICATE KEY UPDATE
-                    inci_name = VALUES(inci_name), display_name = VALUES(display_name),
-                    cas = VALUES(cas), ec = VALUES(ec), e_number = VALUES(e_number),
-                    formula = VALUES(formula), chem_class = VALUES(chem_class),
-                    functions = VALUES(functions), kb_version = VALUES(kb_version),
-                    review_status = VALUES(review_status)
+                    inci_name = COALESCE(VALUES(inci_name), inci_name),
+                    -- A curated display name outranks whatever the ETL derived
+                    -- from a search term: 'Water' should not become 'Aqua'
+                    -- because someone looked the dossier up by its INCI name.
+                    display_name = IF(review_status = 'published',
+                                      display_name, VALUES(display_name)),
+                    cas = COALESCE(VALUES(cas), cas),
+                    ec = COALESCE(VALUES(ec), ec),
+                    e_number = COALESCE(VALUES(e_number), e_number),
+                    formula = COALESCE(VALUES(formula), formula),
+                    chem_class = COALESCE(VALUES(chem_class), chem_class),
+                    functions = VALUES(functions),
+                    kb_version = VALUES(kb_version),
+                    -- Never downgrade a reviewed dossier. An ETL refresh must
+                    -- not silently discard a human's sign-off; only an explicit
+                    -- unpublish should do that.
+                    review_status = IF(review_status = 'published',
+                                       'published', VALUES(review_status))
                 """
             ),
             {

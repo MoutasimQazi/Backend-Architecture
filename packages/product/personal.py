@@ -285,6 +285,19 @@ class PersonalRiskMatcher:
                 f"only {len(resolved)} of {len(ingredients)} ingredients could be identified",
             )
 
+        # Naming a substance is not the same as knowing anything about it. A
+        # dossier can exist with no hazard assertions at all — common for
+        # polymers the ETL identified but found no toxicology for. Counting
+        # those as "assessed" would turn an absence of data into reassurance,
+        # which is the exact failure this whole design exists to prevent.
+        assessed = [f for f in findings if f.hazard_level is not HazardLevel.UNKNOWN]
+        if resolved and len(assessed) / len(resolved) < 0.5:
+            return (
+                Verdict.INSUFFICIENT_DATA,
+                f"{len(resolved) - len(assessed)} of {len(resolved)} identified ingredients "
+                "have no hazard data in the knowledge base yet",
+            )
+
         if flags or any(f.hazard_level is HazardLevel.MODERATE for f in findings):
             return Verdict.USE_WITH_CAUTION, "some ingredients carry cautions worth knowing about"
 

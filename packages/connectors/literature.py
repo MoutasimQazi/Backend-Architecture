@@ -141,6 +141,27 @@ class PubChemConnector:
     VIEW = "https://pubchem.ncbi.nlm.nih.gov/rest/pug_view/data/compound"
 
     def resolve_cid(self, name: str) -> Optional[int]:
+        """Resolve a name to a PubChem CID.
+
+        The `/compound/name/` endpoint only serves discrete molecules, so it
+        404s on polymers, salts and mixtures — dimethicone, hyaluronic acid,
+        the PEGs, carbomer, the polysorbates. Those are a large share of any
+        real cosmetic panel, so a lookup that gives up at the first 404 misses
+        exactly the ingredients that matter most.
+
+        Falling back through the *substance* index catches them: depositor
+        records exist for the trade names, and most link on to a CID.
+        """
+        cid = self._compound_by_name(name)
+        if cid is not None:
+            return cid
+
+        cid = self._cid_via_substance(name)
+        if cid is not None:
+            logger.info("pubchem: %r resolved via the substance index -> CID %s", name, cid)
+        return cid
+
+    def _compound_by_name(self, name: str) -> Optional[int]:
         try:
             response = get_broker().get(f"{self.BASE}/compound/name/{name}/cids/JSON")
         except FetchError as exc:
@@ -154,6 +175,43 @@ class PubChemConnector:
         except ValueError:
             return None
         return int(cids[0]) if cids else None
+
+    def _cid_via_substance(self, name: str) -> Optional[int]:
+        """Substance records → linked CID. Two calls, only on a 404."""
+        try:
+            response = get_broker().get(f"{self.BASE}/substance/name/{name}/sids/JSON")
+        except FetchError:
+            return None
+        if response.status_code != 200:
+            return None
+
+        try:
+            sids = (response.json().get("IdentifierList") or {}).get("SID") or []
+        except ValueError:
+            return None
+        if not sids:
+            return None
+
+        # Depositor records vary in quality; a handful is enough to find one
+        # that carries a structure link.
+        for sid in sids[:5]:
+            try:
+                linked = get_broker().get(f"{self.BASE}/substance/sid/{sid}/cids/JSON")
+            except FetchError:
+                continue
+            if linked.status_code != 200:
+                continue
+            try:
+                payload = linked.json()
+            except ValueError:
+                continue
+
+            for info in (payload.get("InformationList") or {}).get("Information", []):
+                cids = info.get("CID") or []
+                if cids:
+                    return int(cids[0])
+
+        return None
 
     def properties(self, cid: int) -> dict[str, Any]:
         props = "MolecularFormula,MolecularWeight,IUPACName,CanonicalSMILES"

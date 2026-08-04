@@ -159,10 +159,26 @@ class HazardRulesEngine:
             or ingredient.raw_token
         )
 
+        # "No hazard assertions" means two very different things, and conflating
+        # them is how an absence of data becomes reassurance:
+        #
+        #   published + no assertions -> a reviewer looked and found nothing.
+        #                                That is a real finding: NONE.
+        #   draft + no assertions     -> nobody has looked yet. UNKNOWN, and the
+        #                                verdict logic treats it as a data gap.
+        #
+        # Water genuinely has no hazards; a polymer the ETL only just drafted
+        # has no hazards *on record*. Only the first is evidence of safety.
+        reviewed = str(dossier.get("review_status") or "draft") == "published"
+        if assertions:
+            baseline = HazardLevel.NONE
+        else:
+            baseline = HazardLevel.NONE if reviewed else HazardLevel.UNKNOWN
+
         finding = HazardFinding(
             chemical_id=ingredient.chemical_id or "",
             display_name=display,
-            hazard_level=HazardLevel.UNKNOWN if not assertions else HazardLevel.NONE,
+            hazard_level=baseline,
             evidence=evidence or [],
             rules_version=RULES_VERSION,
         )
