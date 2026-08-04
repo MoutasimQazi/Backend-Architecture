@@ -179,13 +179,24 @@ class FetchBroker:
         url: str,
         *,
         headers: Optional[dict[str, str]] = None,
+        params: Optional[dict[str, Any]] = None,
         content: Optional[bytes] = None,
         files: Optional[dict[str, Any]] = None,
         data: Optional[dict[str, Any]] = None,
         timeout: Optional[float] = None,
     ) -> FetchResult:
+        # `params` was missing here while `_request` already supported it, so
+        # every OCR call — which passes ?lang= as a query param — raised
+        # TypeError before a request was ever made.
         return self._request(
-            "POST", url, headers=headers, content=content, files=files, data=data, timeout=timeout
+            "POST",
+            url,
+            headers=headers,
+            params=params,
+            content=content,
+            files=files,
+            data=data,
+            timeout=timeout,
         )
 
     def _request(

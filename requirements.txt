@@ -10,6 +10,8 @@
 fastapi>=0.110,<1.0
 uvicorn[standard]>=0.27          # local dev; Passenger uses passenger_wsgi.py
 a2wsgi>=1.10                     # ASGI -> WSGI bridge for Phusion Passenger
+python-multipart>=0.0.9          # multipart/form-data parsing — images are
+                                 # uploaded as raw binary file parts, not base64
 
 pydantic>=2.6,<3.0
 SQLAlchemy>=2.0,<3.0

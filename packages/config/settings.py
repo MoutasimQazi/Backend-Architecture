@@ -162,11 +162,52 @@ class ModelSettings:
         default_factory=lambda: _env("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
     )
     hf_base_url: str = field(
-        default_factory=lambda: _env("MICROSOFT_BASE_URL", "https://router.huggingface.co/v1")
+        default_factory=lambda: _env(
+            "HF_BASE_URL",
+            _env("MICROSOFT_BASE_URL", "https://router.huggingface.co/v1"),
+        )
+    )
+
+    # Which provider answers first. Everything after the first is a fallback,
+    # reached only when the one before it fails or its circuit breaker is open.
+    #
+    # This is ordered preference, not availability: a provider named here
+    # without a key is skipped. Leaving it unset used to mean "whichever key
+    # happens to be set, OpenAI first" — which silently sent every call to
+    # OpenAI on a host that also had a DeepSeek key, regardless of intent.
+    provider_order: tuple[str, ...] = field(
+        default_factory=lambda: tuple(
+            p.strip().lower()
+            for p in _env("PROVIDER_ORDER", "openai,deepseek,huggingface").split(",")
+            if p.strip()
+        )
     )
 
     small_model: str = field(default_factory=lambda: _env("SMALL_MODEL", "gpt-4o-mini"))
     large_model: str = field(default_factory=lambda: _env("LARGE_MODEL", "gpt-4o"))
+
+    # SMALL_MODEL/LARGE_MODEL name OpenAI models; the others do not serve those
+    # names. Each provider therefore gets its own pair, so "cheap model for
+    # routing, strong model for synthesis" survives a provider switch instead
+    # of collapsing to one model for both jobs.
+    #
+    # DeepSeek uses deepseek-v4-flash for both classes by deliberate choice.
+    # deepseek-chat and deepseek-reasoner were retired from the account, and
+    # deepseek-v4-pro is blocked outright in providers.py — flash is the only
+    # model this deployment is permitted to call.
+    deepseek_small_model: str = field(
+        default_factory=lambda: _env("DEEPSEEK_SMALL_MODEL", "deepseek-v4-flash")
+    )
+    deepseek_large_model: str = field(
+        default_factory=lambda: _env("DEEPSEEK_LARGE_MODEL", "deepseek-v4-flash")
+    )
+    hf_small_model: str = field(
+        default_factory=lambda: _env("HF_SMALL_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
+    )
+    hf_large_model: str = field(
+        default_factory=lambda: _env("HF_LARGE_MODEL", "meta-llama/Llama-3.3-70B-Instruct")
+    )
+
     embedding_model: str = field(
         default_factory=lambda: _env("EMBEDDING_MODEL", "text-embedding-3-small")
     )
@@ -218,6 +259,17 @@ class StorageSettings:
     attachment_ttl_days: int = field(default_factory=lambda: _env_int("ATTACHMENT_TTL_DAYS", 30))
 
 
+def _with_ocr_host(hosts: list[str]) -> list[str]:
+    """Append the configured OCR host so the broker will let OCR through."""
+    from urllib.parse import urlparse
+
+    raw = _env("OCR_API_URL", "https://ocr.moveneticsdigital.com/")
+    host = (urlparse(raw).hostname or "").lower()
+    if host and host not in {h.lower() for h in hosts}:
+        return [*hosts, host]
+    return hosts
+
+
 @dataclass(frozen=True)
 class SecuritySettings:
     jwt_secret: str = field(default_factory=lambda: _env("JWT_SECRET", ""))
@@ -233,12 +285,20 @@ class SecuritySettings:
 
     # arch.md 13: the fetch broker's allowlist. Empty means "deny all outbound
     # user-supplied URLs", which is the safe default.
+    #
+    # The OCR host is appended from OCR_API_URL rather than written out here.
+    # Every OCR call goes through the broker, so an OCR service that is
+    # configured but not allowlisted is blocked — and pointing OCR_API_URL at a
+    # new host would silently break scanning until someone remembered to edit
+    # this list too.
     fetch_allowlist: list[str] = field(
-        default_factory=lambda: _env_list(
-            "FETCH_ALLOWLIST",
-            "world.openfoodfacts.org,world.openbeautyfacts.org,world.openproductsfacts.org,"
-            "pubchem.ncbi.nlm.nih.gov,eutils.ncbi.nlm.nih.gov,www.ebi.ac.uk,api.crossref.org,"
-            "api.openalex.org,api.semanticscholar.org",
+        default_factory=lambda: _with_ocr_host(
+            _env_list(
+                "FETCH_ALLOWLIST",
+                "world.openfoodfacts.org,world.openbeautyfacts.org,world.openproductsfacts.org,"
+                "pubchem.ncbi.nlm.nih.gov,eutils.ncbi.nlm.nih.gov,www.ebi.ac.uk,api.crossref.org,"
+                "api.openalex.org,api.semanticscholar.org",
+            )
         )
     )
     fetch_timeout_seconds: int = field(default_factory=lambda: _env_int("FETCH_TIMEOUT", 20))

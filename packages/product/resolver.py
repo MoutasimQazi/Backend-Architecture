@@ -176,7 +176,13 @@ class IngredientResolver:
 
         resolved: list[ResolvedIngredient] = [
             ResolvedIngredient(
-                raw_token=token.raw,
+                # `token.text`, not `token.raw`: the cleaned form is the
+                # ingredient name. `raw` still carries the panel's punctuation,
+                # so the last entry on a label arrives as "Fragrance." — which
+                # is what the user is shown, and worse, what the research job
+                # is keyed on. That makes "Fragrance." and "Fragrance" two
+                # different unknown substances and enqueues both.
+                raw_token=token.text or token.raw,
                 position=token.position,
                 qualifiers=token.qualifiers,
             )

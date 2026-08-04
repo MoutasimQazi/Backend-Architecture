@@ -20,6 +20,18 @@ venv/
 .env.*
 !.env.example
 
+# .htaccess is SECRET-BEARING on this host. cPanel regenerates it and injects
+# the DB password, JWT secret and all three API keys into a `SetEnv` block, so
+# a copy pulled down from the server must never be committed.
+#
+# Caveat: the file is still tracked from the first commit, and .gitignore does
+# not apply to tracked files. It is held out of the index with
+#   git update-index --skip-worktree .htaccess
+# on every clone (local AND server). This line only starts biting if the file
+# is ever untracked. The security rules that used to live in it are now in
+# deploy/security.htaccess, which IS tracked and carries no secrets.
+.htaccess
+
 /build/
 /dist/
 *.egg-info/
@@ -35,3 +47,4 @@ venv/
 /var/
 /jobs/
 *.log
+*.htaccess

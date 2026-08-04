@@ -51,8 +51,35 @@ PRICING: dict[str, tuple[float, float]] = {
     "gpt-4.1-mini": (0.40, 1.60),
     "text-embedding-3-small": (0.02, 0.0),
     "text-embedding-3-large": (0.13, 0.0),
+    # DeepSeek standard-hours, cache-miss rates. Cache hits bill lower, so a
+    # cost reported from this table is a ceiling, never an understatement.
+    # deepseek-chat and deepseek-reasoner were retired; the account now serves
+    # only the v4 line. Their rates stay here so historical token_cost rows
+    # still price correctly when replayed.
     "deepseek-chat": (0.27, 1.10),
+    "deepseek-reasoner": (0.55, 2.19),
 }
+
+# Models that spend completion tokens on hidden reasoning before emitting any
+# content. Measured on deepseek-v4-flash: a router classification burns 46-221
+# reasoning tokens, and when max_tokens runs out during that phase the reply
+# comes back with finish_reason="length" and an EMPTY string — not an error.
+#
+# That failure is silent and total: the router's configured budget of 200 was
+# below the measured worst case of 288, so the highest-volume chain in the
+# system would have returned nothing on exactly the ambiguous messages it
+# exists to classify. Budgets are therefore given reasoning headroom here
+# rather than being re-tuned by hand at every call site.
+_REASONING_MODELS = {"deepseek-v4-flash"}
+_REASONING_HEADROOM = 512
+_MIN_REASONING_BUDGET = 768
+
+# deepseek-v4-pro is deliberately not used by this deployment. It is blocked
+# rather than merely left unconfigured so that a stray env var or an explicit
+# `model=` argument cannot route spend to it.
+_BLOCKED_MODELS = {"deepseek-v4-pro"}
+
+_unpriced_warned: set[str] = set()
 
 
 class ProviderError(Exception):
@@ -74,6 +101,16 @@ class Completion:
 
     @property
     def usd(self) -> float:
+        if self.model not in PRICING and self.model not in _unpriced_warned:
+            # Reporting $0.00 for a model that is answering real traffic makes
+            # every cost figure in the system wrong in the reassuring
+            # direction. Say so once, loudly, rather than quietly under-count.
+            _unpriced_warned.add(self.model)
+            logger.warning(
+                "no PRICING entry for '%s'; its cost is reported as $0.00. "
+                "Add the per-1M input/output rates to PRICING.",
+                self.model,
+            )
         rate_in, rate_out = PRICING.get(self.model, (0.0, 0.0))
         return round(
             (self.prompt_tokens * rate_in + self.completion_tokens * rate_out) / 1_000_000, 8
@@ -171,24 +208,78 @@ def _client(provider: str) -> Any:
 
 
 def available_providers() -> list[str]:
+    """Configured providers in preference order (PROVIDER_ORDER).
+
+    The order is the caller's stated preference, filtered by which keys are
+    actually present. It used to be hardcoded openai-first, which meant a host
+    holding both an OpenAI and a DeepSeek key sent everything to OpenAI and
+    only ever reached DeepSeek when OpenAI was failing.
+    """
     settings = get_settings().models
-    out = []
-    if settings.openai_api_key:
-        out.append("openai")
-    if settings.deepseek_api_key:
-        out.append("deepseek")
-    if settings.hf_token:
-        out.append("huggingface")
-    return out
+    keys = {
+        "openai": settings.openai_api_key,
+        "deepseek": settings.deepseek_api_key,
+        "huggingface": settings.hf_token,
+    }
+    ordered = [p for p in settings.provider_order if keys.get(p)]
+
+    # A key that is set but not named in PROVIDER_ORDER still belongs in the
+    # fallback chain — dropping it would turn a typo into an outage.
+    ordered += [p for p, key in keys.items() if key and p not in ordered]
+    return ordered
 
 
-def model_for(model_class: ModelClass) -> str:
+def model_for(model_class: ModelClass, provider: Optional[str] = None) -> str:
+    """The model name to send to `provider` for this class of work.
+
+    SMALL_MODEL/LARGE_MODEL name OpenAI models. DeepSeek and HuggingFace serve
+    different names, so each has its own pair; without that mapping the small/
+    large split collapses and routing pays synthesis prices (or the call 404s
+    on an unknown model name).
+    """
     settings = get_settings().models
-    return {
-        ModelClass.SMALL: settings.small_model,
-        ModelClass.LARGE: settings.large_model,
-        ModelClass.EMBEDDING: settings.embedding_model,
-    }[model_class]
+
+    if model_class is ModelClass.EMBEDDING:
+        return settings.embedding_model
+
+    table = {
+        "deepseek": (settings.deepseek_small_model, settings.deepseek_large_model),
+        "huggingface": (settings.hf_small_model, settings.hf_large_model),
+    }
+    small, large = table.get(provider or "openai", (settings.small_model, settings.large_model))
+    return small if model_class is ModelClass.SMALL else large
+
+
+def _resolve_model(provider: str, chosen: str) -> str:
+    """Final say on which model name goes on the wire.
+
+    Enforces the blocklist here, at the one place every call funnels through,
+    so no env var, config typo or explicit `model=` can route spend to a model
+    this deployment has ruled out.
+    """
+    if chosen not in _BLOCKED_MODELS:
+        return chosen
+
+    substitute = model_for(ModelClass.SMALL, provider)
+    if substitute in _BLOCKED_MODELS:
+        raise ProviderError(
+            f"'{chosen}' is blocked and provider '{provider}' has no permitted substitute"
+        )
+    logger.warning("model '%s' is blocked for this deployment; using %s", chosen, substitute)
+    return substitute
+
+
+def _budget_for(model_name: str, requested: int) -> int:
+    """Add reasoning headroom so the answer is not eaten by the thinking.
+
+    A reasoning model charges its hidden reasoning against the same completion
+    budget as the visible reply. Callers size max_tokens for the reply they
+    want, which is the right thing for them to reason about, so the headroom
+    is added here instead of inflating every call site.
+    """
+    if model_name not in _REASONING_MODELS:
+        return requested
+    return max(requested + _REASONING_HEADROOM, _MIN_REASONING_BUDGET)
 
 
 def is_configured() -> bool:
@@ -216,7 +307,6 @@ def complete(
     if not chain:
         raise ProviderError("no model provider is configured")
 
-    resolved_model = model or model_for(model_class)
     last_error: Optional[Exception] = None
 
     for candidate in chain:
@@ -225,12 +315,11 @@ def complete(
             logger.warning("skipping %s: circuit breaker open", candidate)
             continue
 
-        # DeepSeek and HF do not serve OpenAI's model names.
-        provider_model = resolved_model
-        if candidate == "deepseek":
-            provider_model = "deepseek-chat"
-        elif candidate == "huggingface":
-            provider_model = get_settings().models.small_model
+        # An explicit `model=` is the caller pinning one exact model, so it
+        # wins. Otherwise each provider is asked for its own name for this
+        # class of work — the small/large split has to survive a failover.
+        provider_model = _resolve_model(candidate, model or model_for(model_class, candidate))
+        provider_budget = _budget_for(provider_model, max_tokens)
 
         for attempt in range(settings.max_retries + 1):
             started = time.perf_counter()
@@ -240,7 +329,7 @@ def complete(
                     "model": provider_model,
                     "messages": messages,
                     "temperature": temperature,
-                    "max_tokens": max_tokens,
+                    "max_tokens": provider_budget,
                 }
                 if response_format is not None:
                     kwargs["response_format"] = response_format
@@ -251,6 +340,22 @@ def complete(
                 response = client.chat.completions.create(**kwargs)
                 choice = response.choices[0]
                 usage = getattr(response, "usage", None)
+
+                # A reasoning model that exhausts its budget while thinking
+                # returns finish_reason="length" with empty content and no
+                # error. Treating that as a valid empty answer is how a router
+                # silently stops routing, so it is raised and retried with a
+                # bigger budget instead.
+                if (
+                    not (choice.message.content or "").strip()
+                    and not getattr(choice.message, "tool_calls", None)
+                    and choice.finish_reason == "length"
+                ):
+                    provider_budget = max(provider_budget * 2, _MIN_REASONING_BUDGET * 2)
+                    raise ProviderError(
+                        f"{provider_model} exhausted its token budget before producing "
+                        f"content; retrying with max_tokens={provider_budget}"
+                    )
 
                 calls = []
                 for call in getattr(choice.message, "tool_calls", None) or []:

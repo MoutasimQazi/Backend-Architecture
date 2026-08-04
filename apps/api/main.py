@@ -47,7 +47,15 @@ app.add_middleware(
     max_age=600,
 )
 
-MAX_BODY_BYTES = 2 * 1024 * 1024
+# JSON bodies carry text only — attachments arrive as multipart file parts, so
+# 2 MB is generous for a conversation turn. It used to also have to hold
+# base64-encoded images, which inflate by 4/3 and so capped a "max 8 MB" upload
+# at roughly 1.5 MB of actual image.
+MAX_JSON_BODY_BYTES = 2 * 1024 * 1024
+
+# Form fields that may carry a file part. `file`/`files` are the documented
+# names; `attachments`/`images` are accepted because the old client used them.
+_FILE_FIELDS = {"file", "files", "attachment", "attachments", "image", "images"}
 
 
 @app.middleware("http")
@@ -111,15 +119,12 @@ async def preflight() -> dict[str, Any]:
     return {"success": True}
 
 
-@app.post("/")
-async def unified_endpoint(request: Request) -> JSONResponse:
-    request_id = getattr(request.state, "request_id", "")
-
+async def _body_from_json(request: Request) -> dict[str, Any]:
     raw = await request.body()
-    if len(raw) > MAX_BODY_BYTES:
+    if len(raw) > MAX_JSON_BODY_BYTES:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=f"body exceeds {MAX_BODY_BYTES} bytes",
+            detail=f"body exceeds {MAX_JSON_BODY_BYTES} bytes",
         )
 
     try:
@@ -131,6 +136,95 @@ async def unified_endpoint(request: Request) -> JSONResponse:
 
     if not isinstance(body, dict):
         raise HTTPException(status_code=400, detail="body must be a JSON object")
+    return body
+
+
+async def _body_from_multipart(request: Request) -> dict[str, Any]:
+    """Build the action body from a multipart form.
+
+    Images arrive as raw binary file parts. Structured parameters ride along
+    either as ordinary form fields or as one `payload` field holding a JSON
+    object, so a scan can still carry a message, jurisdiction and client hints
+    without a second round trip.
+
+    Every part is size-checked as it is read; the total is bounded by
+    max_attachments x max_upload_bytes rather than one flat body limit.
+    """
+    import json
+
+    storage = settings.storage
+
+    try:
+        form = await request.form()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"malformed multipart body: {exc}") from exc
+
+    body: dict[str, Any] = {}
+    files: list[dict[str, Any]] = []
+
+    try:
+        for key, value in form.multi_items():
+            if hasattr(value, "read"):  # an UploadFile
+                if key not in _FILE_FIELDS:
+                    continue
+                if len(files) >= storage.max_attachments:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"too many attachments (max {storage.max_attachments})",
+                    )
+                raw = await value.read()
+                if not raw:
+                    continue
+                if len(raw) > storage.max_upload_bytes:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail=(
+                            f"'{value.filename or key}' is {len(raw)} bytes; "
+                            f"the limit is {storage.max_upload_bytes}"
+                        ),
+                    )
+                files.append(
+                    {
+                        "bytes": raw,
+                        "mime_type": value.content_type or None,
+                        "filename": value.filename or None,
+                    }
+                )
+            elif key == "payload":
+                try:
+                    parsed = json.loads(value)
+                except ValueError as exc:
+                    raise HTTPException(
+                        status_code=400, detail="'payload' must be a JSON object"
+                    ) from exc
+                if not isinstance(parsed, dict):
+                    raise HTTPException(status_code=400, detail="'payload' must be a JSON object")
+                body.update(parsed)
+            else:
+                # A plain form field. Explicit fields win over `payload` so a
+                # client can override one value without rebuilding the JSON.
+                body[key] = value
+    finally:
+        await form.close()
+
+    if files:
+        body["attachments"] = files
+        # Sending files at all means the caller wants them handled; `chat`
+        # would silently ignore them if no action was named.
+        body.setdefault("action", "scan")
+
+    return body
+
+
+@app.post("/")
+async def unified_endpoint(request: Request) -> JSONResponse:
+    request_id = getattr(request.state, "request_id", "")
+
+    content_type = request.headers.get("content-type", "").split(";")[0].strip().lower()
+    if content_type == "multipart/form-data":
+        body = await _body_from_multipart(request)
+    else:
+        body = await _body_from_json(request)
 
     action_name = str(body.get("action") or "chat")
     handler = get_action(action_name)

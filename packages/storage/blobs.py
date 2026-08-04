@@ -32,6 +32,7 @@ from packages.guards.fetch_broker import FetchError, get_broker
 logger = logging.getLogger(__name__)
 
 _DATA_URL = re.compile(r"^data:([^;,]+)?(;base64)?,(.*)$", re.DOTALL)
+_BASE64_CHARS = re.compile(r"[A-Za-z0-9+/=\s]+")
 
 # Sniffed from content rather than trusted from the client: a caller claiming
 # image/png for a PHP script should not get a .php on disk.
@@ -117,9 +118,23 @@ class BlobStore:
 
         sha = hashlib.sha256(raw).hexdigest()
 
+        # Dedupe per owner, not globally.
+        #
+        # Deduping on sha256 alone handed the SECOND uploader of a given image
+        # the first uploader's blob_id — a row they do not own. `get()` scopes
+        # by user_id, so every later read of that handle returned nothing and
+        # the scan failed with "attachment not found". Two people photographing
+        # the same product is the normal case here, not an edge case.
+        #
+        # The file on disk stays shared (its path is content-addressed); only
+        # the blob_object row is per-user. So storage is still deduplicated
+        # while access stays scoped.
         existing = self.session.execute(
-            text("SELECT blob_id, rel_path, size_bytes FROM blob_object WHERE sha256 = :sha LIMIT 1"),
-            {"sha": sha},
+            text(
+                "SELECT blob_id, rel_path, size_bytes FROM blob_object "
+                "WHERE sha256 = :sha AND user_id <=> :uid LIMIT 1"
+            ),
+            {"sha": sha, "uid": user_id},
         ).mappings().first()
 
         if existing:
@@ -139,7 +154,10 @@ class BlobStore:
 
         path = self._path_for(sha, mime)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(raw)
+        # Another user may already have written these exact bytes to this exact
+        # path. Identical content, so no need to rewrite it.
+        if not path.is_file():
+            path.write_bytes(raw)
 
         blob_id = uuid.uuid4().hex
         rel_path = str(path.relative_to(self.base_dir)).replace("\\", "/")
@@ -230,26 +248,32 @@ class BlobStore:
 # -- attachment intake ------------------------------------------------------
 
 
-def decode_attachment_payload(value: str) -> tuple[bytes, Optional[str]]:
-    """Accept a data: URL, bare base64, or an allowlisted http(s) URL.
+_BASE64_HINT = (
+    "send the image as a multipart/form-data file part named 'file' instead "
+    "of base64"
+)
 
-    The http(s) case is the one that used to be SSRF (the old `app.py` called
-    `urlopen` on it directly); it now goes through the fetch broker.
+
+def decode_attachment_payload(value: str) -> tuple[bytes, Optional[str]]:
+    """Resolve an http(s) attachment reference to bytes.
+
+    Base64 intake was removed: it inflated every image by a third, forced the
+    whole file through the JSON body limit, and meant the bytes were parsed
+    twice before anything could validate them. Images now arrive as raw
+    multipart file parts and never pass through this function at all.
+
+    What remains is the URL case — the one that used to be SSRF, because the
+    old `app.py` called `urlopen` on caller-supplied URLs directly. It goes
+    through the fetch broker, which resolves DNS and re-checks every address
+    before connecting.
     """
     if not isinstance(value, str) or not value.strip():
         raise ValueError("empty attachment payload")
 
     value = value.strip()
 
-    match = _DATA_URL.match(value)
-    if match:
-        declared_mime, is_b64, payload = match.groups()
-        if not is_b64:
-            raise ValueError("only base64 data URLs are accepted")
-        try:
-            return base64.b64decode(payload, validate=True), declared_mime
-        except Exception as exc:
-            raise ValueError("malformed base64 in data URL") from exc
+    if _DATA_URL.match(value):
+        raise ValueError(f"data: URLs are no longer accepted — {_BASE64_HINT}")
 
     if value.startswith(("http://", "https://")):
         try:
@@ -260,7 +284,16 @@ def decode_attachment_payload(value: str) -> tuple[bytes, Optional[str]]:
             raise ValueError(f"attachment URL returned {result.status_code}")
         return result.content, result.headers.get("content-type", "").split(";")[0] or None
 
-    try:
-        return base64.b64decode(value, validate=True), None
-    except Exception as exc:
-        raise ValueError("attachment is not a data URL, http(s) URL, or base64") from exc
+    # A bare base64 blob is the most likely thing an un-migrated client sends,
+    # and "not a valid URL" would send them looking in the wrong place.
+    if _looks_like_base64(value):
+        raise ValueError(f"base64 attachments are no longer accepted — {_BASE64_HINT}")
+
+    raise ValueError(f"attachment must be an http(s) URL — {_BASE64_HINT}")
+
+
+def _looks_like_base64(value: str) -> bool:
+    if len(value) < 64:
+        return False
+    sample = value[:256]
+    return bool(_BASE64_CHARS.fullmatch(sample))

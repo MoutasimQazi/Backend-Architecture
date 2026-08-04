@@ -91,6 +91,8 @@ def handle_chat(body: dict, principal: Principal, session: Session) -> dict[str,
             detail=f"too many attachments (max {settings.storage.max_attachments})",
         )
 
+    raw_attachments = _materialise_attachments(raw_attachments, principal, session)
+
     attachments: list[Attachment] = []
     for item in raw_attachments:
         if not isinstance(item, dict):
@@ -346,8 +348,12 @@ def handle_upload(body: dict, principal: Principal, session: Session) -> dict[st
     """Store attachments and return handles.
 
     Bytes enter here and nowhere else. The chat turn then carries handles, so a
-    scan never ships base64 through the conversation payload and a retry costs
-    no re-upload.
+    retry costs no re-upload.
+
+    Two shapes arrive here. A multipart request has already been read into
+    `{"bytes": ...}` items by the endpoint — that is the normal path for
+    images. A JSON request carries `{"data": "https://..."}`, which is
+    resolved through the fetch broker. Base64 is not accepted in either.
     """
     from packages.storage.blobs import BlobStore, decode_attachment_payload
 
@@ -368,11 +374,15 @@ def handle_upload(body: dict, principal: Principal, session: Session) -> dict[st
     errors: list[dict[str, Any]] = []
 
     for index, item in enumerate(raw_items):
-        payload = item.get("data") if isinstance(item, dict) else item
         declared = item.get("mime_type") if isinstance(item, dict) else None
 
         try:
-            raw, sniffed_mime = decode_attachment_payload(payload)
+            if isinstance(item, dict) and isinstance(item.get("bytes"), (bytes, bytearray)):
+                # Multipart part: already bytes, nothing to decode.
+                raw, sniffed_mime = bytes(item["bytes"]), None
+            else:
+                payload = item.get("data") if isinstance(item, dict) else item
+                raw, sniffed_mime = decode_attachment_payload(payload)
             blob = store.put(
                 raw,
                 user_id=principal.user_id,
@@ -403,6 +413,33 @@ def handle_upload(body: dict, principal: Principal, session: Session) -> dict[st
     return {"action": "upload", "attachments": stored, "errors": errors}
 
 
+def _materialise_attachments(
+    raw_attachments: list[Any], principal: Principal, session: Session
+) -> list[Any]:
+    """Turn raw bytes or URLs into stored handles.
+
+    A multipart request delivers `{"bytes": ...}` items and a JSON request may
+    deliver a URL string; the graph only ever works with `attachment_id`
+    handles. Doing the conversion here means `chat` and `scan` accept exactly
+    the same shapes — previously only `scan` did, so posting an image to
+    `chat` failed validation with a raw pydantic error.
+    """
+    if not raw_attachments:
+        return raw_attachments
+
+    already_handles = all(
+        isinstance(a, dict) and a.get("attachment_id") for a in raw_attachments
+    )
+    if already_handles:
+        return raw_attachments
+
+    uploaded = handle_upload({"attachments": raw_attachments}, principal, session)
+    return [
+        {"attachment_id": a["attachment_id"], "mime_type": a["mime_type"]}
+        for a in uploaded["attachments"]
+    ]
+
+
 @action("scan")
 def handle_scan(body: dict, principal: Principal, session: Session) -> dict[str, Any]:
     """Upload and analyse in one call — the mobile scan path.
@@ -411,18 +448,6 @@ def handle_scan(body: dict, principal: Principal, session: Session) -> dict[str,
     because the scanner screen wants the structured analysis without a
     conversational turn wrapped around it.
     """
-    if body.get("attachments") and isinstance(body["attachments"][0], (str, dict)) and not all(
-        isinstance(a, dict) and a.get("attachment_id") for a in body["attachments"]
-    ):
-        uploaded = handle_upload(body, principal, session)
-        body = {
-            **body,
-            "attachments": [
-                {"attachment_id": a["attachment_id"], "mime_type": a["mime_type"]}
-                for a in uploaded["attachments"]
-            ],
-        }
-
     result = handle_chat({**body, "action": "chat", "message": body.get("message") or ""}, principal, session)
     result["action"] = "scan"
     return result
