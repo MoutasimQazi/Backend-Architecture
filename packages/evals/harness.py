@@ -119,16 +119,33 @@ def run_all(
             )
             continue
 
-        if suite.requires_db and session_factory is None:
-            reports.append(
-                EvalReport(
-                    suite=suite.name,
-                    gate=suite.gate,
-                    skipped=True,
-                    skip_reason="no database session",
+        if suite.requires_db:
+            if session_factory is None:
+                reports.append(
+                    EvalReport(
+                        suite=suite.name,
+                        gate=suite.gate,
+                        skipped=True,
+                        skip_reason="no database session",
+                    )
                 )
-            )
-            continue
+                continue
+
+            # An unreachable database is not a failing suite. Reporting it as
+            # one trains people to ignore red, which is how a real regression
+            # gets waved through.
+            from packages.storage.db import ping
+
+            if not ping():
+                reports.append(
+                    EvalReport(
+                        suite=suite.name,
+                        gate=suite.gate,
+                        skipped=True,
+                        skip_reason="database unreachable",
+                    )
+                )
+                continue
 
         try:
             if suite.requires_db:

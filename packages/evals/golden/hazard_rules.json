@@ -70,10 +70,19 @@
     "expect_rules": ["ghs_irritant"]
   },
   {
-    "id": "no_assertions_unknown",
-    "note": "absence of data must be 'unknown', never 'none'/safe",
+    "id": "draft_no_assertions_unknown",
+    "note": "nobody has looked yet - absence of data must be 'unknown', never 'none'/safe",
+    "review_status": "draft",
     "assertions": [],
     "expect_level": "unknown",
+    "expect_rules": []
+  },
+  {
+    "id": "reviewed_no_assertions_none",
+    "note": "a reviewer looked and found nothing - that IS a finding (water, glycerin)",
+    "review_status": "published",
+    "assertions": [],
+    "expect_level": "none",
     "expect_rules": []
   },
   {

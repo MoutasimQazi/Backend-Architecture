@@ -79,7 +79,10 @@ class HazardRulesSuite(EvalSuite):
                 confidence=1.0,
                 resolution_method=ResolutionMethod.EXACT_INCI,
             )
-            finding = engine.assess(ingredient, {}, case["assertions"])
+            # An unreviewed dossier and a reviewed-but-clean one mean different
+            # things; the golden set pins both (see draft_/reviewed_ cases).
+            dossier = {"review_status": case.get("review_status", "published")}
+            finding = engine.assess(ingredient, dossier, case["assertions"])
 
             fired = {r.split("@")[0] for r in finding.rule_ids}
             expected_rules = set(case.get("expect_rules", []))
