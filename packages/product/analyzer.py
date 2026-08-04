@@ -14,6 +14,7 @@ the response says so, rather than blocking the turn.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -306,9 +307,15 @@ class ProductAnalyzer:
         keys = [a.lower().strip() for a in context.medical.allergies if a]
         return self.chemicals.cross_reactants(keys)
 
+    @staticmethod
+    def _research_priority_for_test(
+        unresolved: list[ResolvedIngredient],
+    ) -> list[ResolvedIngredient]:
+        return _research_priority(unresolved)
+
     def _enqueue_research(self, unresolved: list[ResolvedIngredient]) -> list[str]:
         job_ids: list[str] = []
-        for ingredient in unresolved[:10]:
+        for ingredient in _research_priority(unresolved)[:10]:
             token = ingredient.raw_token.strip()
             if not token:
                 continue
@@ -324,3 +331,54 @@ class ProductAnalyzer:
                 )
             )
         return job_ids
+
+
+# Ingredient panels are ordered by weight, so the first entries are bulk
+# (sugar, water, flour) and the last are the additives — colours, preservatives,
+# fragrance allergens. That is the exact inverse of how interesting they are to
+# a hazard scanner.
+#
+# Taking the first N unresolved tokens therefore spent the whole research
+# budget on "sugar" and "corn syrup" while Red #40, Tartrazine, Sunset Yellow
+# and Brilliant Blue — the four ingredients on that pack that actually carry
+# regulatory warnings — were never looked up at all.
+
+# Colour indices, E-numbers, CI numbers, FD&C names: near-certain additives.
+_ADDITIVE_PATTERN = re.compile(
+    r"(#\s*\d|\bE\s?\d{3}\b|\bci\s*\d{4,5}\b|\bfd&?c\b|\bred\b|\byellow\b|\bblue\b|\bgreen\b"
+    r"|\blake\b|\bdye\b|\bcolou?r\b|\btartrazine\b|\bcarmine\b"
+    r"|\bparaben\b|\bbenzoate\b|\bsorbate\b|\bsulph?ite\b|\bnitrite\b|\bnitrate\b|\bbht\b|\bbha\b"
+    r"|\bglutamate\b|\bmsg\b|\baspartame\b|\bsucralose\b|\bsaccharin\b|\bacesulfame\b"
+    r"|\bedta\b|\bphthalate\b|\btriclosan\b|\bformaldehyde\b)",
+    re.IGNORECASE,
+)
+
+# Bulk foodstuffs and category words. Worth researching eventually, but they
+# are rarely the reason a product is unsafe, and several are not single
+# compounds at all so PubChem cannot resolve them.
+_BULK_PATTERN = re.compile(
+    r"^(sugar|salt|water|aqua|corn syrup|glucose|fructose|sucrose|flour|wheat flour|starch|"
+    r"modified food starch|milk|cream|butter|egg|eggs|oil|palm oil|vegetable oil|"
+    r"natural and artificial flavou?rs?|natural flavou?rs?|artificial flavou?rs?|"
+    r"artificial colou?r|spices?|yeast|honey|cocoa|dextrin|maltodextrin)$",
+    re.IGNORECASE,
+)
+
+
+def _research_priority(unresolved: list[ResolvedIngredient]) -> list[ResolvedIngredient]:
+    """Order unresolved tokens by how likely they are to matter.
+
+    Stable within a band, so panel order still breaks ties and the result is
+    deterministic — which matters because the same product must enqueue the
+    same jobs every time for the idempotency keys to collapse.
+    """
+
+    def rank(item: ResolvedIngredient) -> int:
+        token = (item.raw_token or "").strip()
+        if _ADDITIVE_PATTERN.search(token):
+            return 0
+        if _BULK_PATTERN.match(token):
+            return 2
+        return 1
+
+    return sorted(unresolved, key=rank)

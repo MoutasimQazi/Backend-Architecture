@@ -99,18 +99,34 @@ class ChemicalEtl:
             outcome.error = "empty name"
             return outcome
 
-        chemical_id = _slug(clean_name)
+        # Labels use trade names; PubChem indexes chemical names. "Red #40"
+        # 404s, "Allura Red AC" resolves to CID 33258 — the same substance,
+        # and one of the colours carrying a mandatory EU warning. Without this
+        # the most hazard-relevant ingredients on a food pack were exactly the
+        # ones research could never find.
+        lookup_name = expand_alias(clean_name)
+        if lookup_name != clean_name:
+            outcome.notes.append(f"alias {clean_name!r} -> {lookup_name!r}")
+
+        # The id comes from the RESOLVED name so "Red #40", "FD&C Red No. 40"
+        # and "Allura Red AC" converge on one dossier instead of three.
+        chemical_id = _slug(lookup_name)
         if not chemical_id:
             outcome.error = f"could not derive an id from {name!r}"
             return outcome
         outcome.chemical_id = chemical_id
 
-        cid = self.pubchem.resolve_cid(clean_name)
+        cid = self.pubchem.resolve_cid(lookup_name)
         outcome.external_calls += 1
         if cid is None:
-            outcome.error = f"PubChem has no compound named {clean_name!r}"
+            outcome.error = f"PubChem has no compound named {lookup_name!r}"
             return outcome
         outcome.notes.append(f"pubchem cid {cid}")
+
+        # The dossier is filed under the chemical name; the label wording is
+        # kept as a synonym so the next scan of this pack resolves by hash on
+        # the first rung instead of researching it again.
+        display_source = lookup_name
 
         properties = self.pubchem.properties(cid)
         outcome.external_calls += 1
@@ -124,8 +140,8 @@ class ChemicalEtl:
 
         self.chemicals.upsert_chemical(
             chemical_id=chemical_id,
-            inci_name=clean_name.upper(),
-            display_name=clean_name.title(),
+            inci_name=display_source.upper(),
+            display_name=display_source.title(),
             cas=cas,
             formula=properties.get("MolecularFormula"),
             chem_class=None,
@@ -136,7 +152,11 @@ class ChemicalEtl:
             review_status="draft",
         )
 
-        self.chemicals.add_synonym(chemical_id, clean_name, kind="inci")
+        self.chemicals.add_synonym(chemical_id, display_source, kind="inci")
+        if clean_name.lower() != display_source.lower():
+            # The wording actually printed on the pack. This is the one that
+            # makes the next scan resolve without another PubChem round trip.
+            self.chemicals.add_synonym(chemical_id, clean_name, kind="synonym")
         outcome.synonyms_added += 1
         if cas:
             self.chemicals.add_synonym(chemical_id, cas, kind="cas")
@@ -265,3 +285,68 @@ class ChemicalEtl:
             {"lim": limit},
         ).mappings().all()
         return [dict(r) for r in rows]
+
+
+# -- label-name aliases -----------------------------------------------------
+#
+# Ingredient panels use regulatory trade names; PubChem indexes chemical
+# names. Verified against the live API: "red #40" 404s, "Allura Red AC" is
+# CID 33258. Three of the four colours below carry the mandatory EU warning
+# "may have an adverse effect on activity and attention in children", so a
+# scanner that cannot look them up misses the most flaggable ingredients on a
+# typical confectionery pack.
+#
+# Only unambiguous one-to-one mappings belong here. Mixtures with no single
+# CID — caramel colour, shellac, carnauba wax, "natural flavours" — are left
+# out deliberately: inventing a compound for them would attach real toxicology
+# to the wrong substance.
+
+_ALIASES: dict[str, str] = {
+    # FD&C colours, by their chemical names.
+    "red 40": "Allura Red AC",
+    "red 40 lake": "Allura Red AC",
+    "allura red": "Allura Red AC",
+    "yellow 5": "Tartrazine",
+    "yellow 5 lake": "Tartrazine",
+    "yellow 6": "Sunset Yellow FCF",
+    "yellow 6 lake": "Sunset Yellow FCF",
+    "sunset yellow": "Sunset Yellow FCF",
+    "blue 1": "Brilliant Blue FCF",
+    "blue 1 lake": "Brilliant Blue FCF",
+    "brilliant blue": "Brilliant Blue FCF",
+    "blue 2": "Indigo carmine",
+    "indigotine": "Indigo carmine",
+    "red 3": "Erythrosine",
+    "green 3": "Fast Green FCF",
+    "carmine": "Carminic acid",
+    "cochineal": "Carminic acid",
+    # Common abbreviations and vernacular names.
+    "msg": "Monosodium glutamate",
+    "bha": "Butylated hydroxyanisole",
+    "bht": "Butylated hydroxytoluene",
+    "tbhq": "tert-Butylhydroquinone",
+    "edta": "Edetic acid",
+    "vitamin c": "Ascorbic acid",
+    "vitamin e": "Tocopherol",
+    "vitamin b3": "Niacin",
+    "baking soda": "Sodium bicarbonate",
+    "cream of tartar": "Potassium bitartrate",
+    "table salt": "Sodium chloride",
+    "epsom salt": "Magnesium sulfate",
+    "saltpeter": "Potassium nitrate",
+}
+
+# "FD&C Red No. 40", "Red #40", "Red 40" and "F D & C red no 40" all reduce to
+# "red 40" before the table is consulted.
+_ALIAS_NORMALISE = re.compile(r"(?:\bfd\s*&?\s*c\b|\bno\.?\b|[#().,])", re.IGNORECASE)
+
+
+def expand_alias(name: str) -> str:
+    """Map a label's wording to the name PubChem will recognise.
+
+    Returns the input unchanged when there is no confident mapping — an
+    unknown ingredient is a correct outcome, a wrong dossier is not.
+    """
+    reduced = _ALIAS_NORMALISE.sub(" ", (name or "").lower())
+    reduced = re.sub(r"\s+", " ", reduced).strip()
+    return _ALIASES.get(reduced, name)
