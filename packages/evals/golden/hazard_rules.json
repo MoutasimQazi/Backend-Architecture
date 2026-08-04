@@ -1,0 +1,89 @@
+[
+  {
+    "id": "iarc1_high",
+    "note": "IARC group 1 is a known human carcinogen",
+    "assertions": [{"domain": "hazard", "key_name": "iarc_group", "value": "1"}],
+    "expect_level": "high",
+    "expect_rules": ["iarc_known_carcinogen"]
+  },
+  {
+    "id": "iarc2a_high",
+    "assertions": [{"domain": "hazard", "key_name": "iarc_group", "value": "2A"}],
+    "expect_level": "high",
+    "expect_rules": ["iarc_known_carcinogen"]
+  },
+  {
+    "id": "iarc2b_moderate",
+    "assertions": [{"domain": "hazard", "key_name": "iarc_group", "value": "2B"}],
+    "expect_level": "moderate",
+    "expect_rules": ["iarc_possible_carcinogen"]
+  },
+  {
+    "id": "iarc3_none",
+    "note": "group 3 is 'not classifiable' - must NOT be escalated",
+    "assertions": [{"domain": "hazard", "key_name": "iarc_group", "value": "3"}],
+    "expect_level": "none",
+    "expect_rules": []
+  },
+  {
+    "id": "banned_high",
+    "assertions": [{"domain": "regulatory", "key_name": "annex_ii", "value": "prohibited", "jurisdiction": "EU"}],
+    "expect_level": "high",
+    "expect_rules": ["banned_in_jurisdiction"]
+  },
+  {
+    "id": "restricted_moderate",
+    "assertions": [{"domain": "regulatory", "key_name": "annex_iii", "value": "max 1%", "jurisdiction": "EU"}],
+    "expect_level": "moderate",
+    "expect_rules": ["restricted_with_limit"]
+  },
+  {
+    "id": "endocrine_moderate",
+    "assertions": [{"domain": "endocrine", "key_name": "list_membership", "value": "EU EDC"}],
+    "expect_level": "moderate",
+    "expect_rules": ["endocrine_disruptor_listed"],
+    "expect_endocrine": true
+  },
+  {
+    "id": "svhc_high",
+    "assertions": [{"domain": "hazard", "key_name": "svhc", "value": "listed"}],
+    "expect_level": "high",
+    "expect_rules": ["svhc_listed"]
+  },
+  {
+    "id": "eu26_low",
+    "assertions": [{"domain": "allergen", "key_name": "eu26", "value": "declarable"}],
+    "expect_level": "low",
+    "expect_rules": ["eu26_fragrance_allergen"],
+    "expect_allergen": true
+  },
+  {
+    "id": "ghs_cmr_high",
+    "assertions": [{"domain": "hazard", "key_name": "ghs_code", "value": "H350"}],
+    "expect_level": "high",
+    "expect_rules": ["ghs_severe_health_hazard"]
+  },
+  {
+    "id": "ghs_irritant_low",
+    "assertions": [{"domain": "hazard", "key_name": "ghs_code", "value": "H315"}],
+    "expect_level": "low",
+    "expect_rules": ["ghs_irritant"]
+  },
+  {
+    "id": "no_assertions_unknown",
+    "note": "absence of data must be 'unknown', never 'none'/safe",
+    "assertions": [],
+    "expect_level": "unknown",
+    "expect_rules": []
+  },
+  {
+    "id": "highest_wins",
+    "note": "a mild and a severe finding together must yield the severe one",
+    "assertions": [
+      {"domain": "hazard", "key_name": "ghs_code", "value": "H315"},
+      {"domain": "hazard", "key_name": "iarc_group", "value": "1"}
+    ],
+    "expect_level": "high",
+    "expect_rules": ["ghs_irritant", "iarc_known_carcinogen"]
+  }
+]

@@ -1,0 +1,35 @@
+# Runtime dependencies.
+#
+# No redis, no celery, no psycopg2: this deploys to cPanel with MySQL and no
+# broker. The queue, the cache and the locks are all MySQL (see
+# packages/storage/migrations/001_init.sql for the mapping).
+#
+# PyMySQL rather than mysqlclient — pure Python, so it installs without a C
+# compiler, which shared hosting rarely provides.
+
+fastapi>=0.110,<1.0
+uvicorn[standard]>=0.27          # local dev; Passenger uses passenger_wsgi.py
+a2wsgi>=1.10                     # ASGI -> WSGI bridge for Phusion Passenger
+
+pydantic>=2.6,<3.0
+SQLAlchemy>=2.0,<3.0
+PyMySQL>=1.1
+cryptography>=42.0               # required by PyMySQL for caching_sha2_password
+python-dotenv>=1.0
+PyJWT>=2.8
+
+numpy>=1.26                      # cosine similarity over the embedding blobs
+
+# Model providers. The OpenAI SDK also drives DeepSeek and the HF router via
+# their OpenAI-compatible base URLs.
+openai>=1.30
+httpx>=0.27                      # also the transport for the fetch broker
+
+# Product scanning. Both are imported lazily: they are the heaviest wheels here
+# and the most likely to be missing on a shared host, and a deploy without them
+# must degrade to "photograph the panel" rather than fail to boot.
+# Use the *headless* OpenCV build — plain opencv-python needs libGL.so.1, which
+# cPanel images generally do not have.
+opencv-python-headless>=4.9
+zxing-cpp>=2.2
+Pillow>=10.0

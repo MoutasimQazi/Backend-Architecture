@@ -1,0 +1,73 @@
+[
+  {
+    "id": "declared_allergy_direct",
+    "note": "the gate is 100%: a missed allergen is the failure mode that hurts someone",
+    "allergies": ["Limonene"],
+    "ingredients": ["Aqua", "Limonene", "Glycerin"],
+    "must_flag": ["Limonene"]
+  },
+  {
+    "id": "declared_allergy_case_insensitive",
+    "allergies": ["limonene"],
+    "ingredients": ["LIMONENE"],
+    "must_flag": ["LIMONENE"]
+  },
+  {
+    "id": "allergy_within_compound_name",
+    "allergies": ["soy"],
+    "ingredients": ["Soy Lecithin", "Aqua"],
+    "must_flag": ["Soy Lecithin"]
+  },
+  {
+    "id": "no_false_positive_substring",
+    "note": "'nut' must not match inside 'coconut' - false alarms train users to ignore real ones",
+    "allergies": ["nut"],
+    "ingredients": ["Coconut Oil", "Aqua"],
+    "must_flag": [],
+    "must_not_flag": ["Coconut Oil"]
+  },
+  {
+    "id": "unresolved_token_still_flagged",
+    "note": "an ingredient we could not resolve must still be checked against allergies",
+    "allergies": ["peanut"],
+    "ingredients": ["Peanut Oil Extract"],
+    "unresolved": ["Peanut Oil Extract"],
+    "must_flag": ["Peanut Oil Extract"]
+  },
+  {
+    "id": "pregnancy_retinoid",
+    "pregnancy_status": "pregnant",
+    "ingredients": ["Retinol", "Aqua"],
+    "must_flag": ["Retinol"]
+  },
+  {
+    "id": "pregnancy_not_applied_when_absent",
+    "ingredients": ["Retinol", "Aqua"],
+    "must_flag": [],
+    "must_not_flag": ["Retinol"]
+  },
+  {
+    "id": "celiac_gluten",
+    "conditions": ["Celiac disease"],
+    "ingredients": ["Wheat Flour", "Sugar"],
+    "must_flag": ["Wheat Flour"]
+  },
+  {
+    "id": "vegan_gelatin",
+    "preferences": ["vegan"],
+    "ingredients": ["Gelatin", "Sugar"],
+    "must_flag": ["Gelatin"]
+  },
+  {
+    "id": "diabetes_maltodextrin",
+    "conditions": ["Type 2 Diabetes"],
+    "ingredients": ["Maltodextrin", "Aqua"],
+    "must_flag": ["Maltodextrin"]
+  },
+  {
+    "id": "clean_profile_no_flags",
+    "note": "no declared risks must produce no flags - noise is its own harm",
+    "ingredients": ["Aqua", "Glycerin"],
+    "must_flag": []
+  }
+]
