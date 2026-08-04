@@ -20,8 +20,8 @@ Swapping any of these back is a change behind the existing interface, not a rewr
 ## One endpoint
 
 Everything is `POST /`, discriminated by `action` (default `chat`). `GET /` returns
-status. This matches the shape the old `app.py` already exposes, so clients keep
-the same URL.
+status. This matches the shape the old `app.py` exposed, so existing clients keep the
+same URL.
 
 ```jsonc
 POST /
@@ -52,9 +52,9 @@ capture → decode barcode → identify product → OCR label →
 parse panel → resolve to chemical ids → hazard rules → personal risk → verdict
 ```
 
-**The runtime path touches zero external toxicology APIs.** the old `app.py` fans
-out to 6 upstream APIs plus an LLM call *per ingredient*, inside the request —
-roughly 90 network calls for one scan. This does at most two (a product lookup
+**The runtime path touches zero external toxicology APIs.** The old `app.py`
+fanned out to 6 upstream APIs plus an LLM call *per ingredient*, inside the
+request — roughly 90 network calls for one scan. This does at most two (a product lookup
 and an OCR call, both cached) and a handful of batched local queries, regardless
 of panel length.
 
@@ -74,7 +74,7 @@ What holds the safety guarantees:
   not read returns `Insufficient data`, not `Generally suitable`.
 - **All outbound HTTP goes through the fetch broker** — allowlist, DNS checked
   before connect, private/link-local/metadata ranges refused, redirects
-  re-validated per hop. This closes the SSRF in the old `app.py` (line 15).
+  re-validated per hop. This closes the SSRF the old `app.py` had via `urlopen` on user-supplied URLs.
 
 Seed the knowledge base:
 
@@ -150,14 +150,19 @@ Overlapping ticks are safe: the worker takes a MySQL advisory lock and a second
 process exits rather than double-processing. If your plan allows a persistent
 process, drop `--once` and run it as a daemon instead.
 
-**7. Verify:**
+**7. Verify** — one command answers "is this box ready?":
+
+```bash
+python scripts/preflight.py --fix
+```
+
+It checks the Python version, every import, the schema, config, the database,
+seed data and the model provider. Exit 0 ready · 1 blocking · 2 ready with
+warnings. Then confirm over HTTP:
 
 ```bash
 curl https://your-domain/            # expect {"status":"ok", ...}
 ```
-
-`status` reports `degraded` when the database is unreachable or config is
-incomplete — check `config_problems`.
 
 ## Local development
 
