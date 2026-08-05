@@ -16,6 +16,7 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
+from packages.product import allergens as allergen_terms
 from packages.domain.enums import HazardLevel, Severity, Verdict
 from packages.domain.models import (
     HazardFinding,
@@ -152,13 +153,27 @@ class PersonalRiskMatcher:
                 if not needle:
                     continue
 
-                if _mentions(haystack, needle):
+                # Synonym-aware. A literal match on the declared word missed
+                # "hydrolysed groundnut protein" for a declared peanut allergy
+                # — same legume, different word, and the standard word on
+                # Indian labels. See packages/product/allergens.py.
+                matched, term = allergen_terms.match(allergy, haystack)
+                if matched:
+                    reason = f"you have declared an allergy to {allergy}"
+                    if term and term != needle:
+                        # Say why, or "contains groundnut" reads like a false
+                        # alarm to someone who declared peanuts.
+                        reason = (
+                            f"contains {term}, which is the same allergen as your "
+                            f"declared {allergy}"
+                        )
                     flags.append(
                         PersonalFlag(
                             chemical_id=ingredient.chemical_id or "",
                             display_name=ingredient.display_name or ingredient.raw_token,
-                            reason=f"you have declared an allergy to {allergy}",
+                            reason=reason,
                             severity=Severity.CRITICAL,
+                            position=ingredient.position,
                             source_of_rule="declared_allergy",
                         )
                     )
@@ -175,6 +190,7 @@ class PersonalRiskMatcher:
                                 display_name=ingredient.display_name or ingredient.raw_token,
                                 reason=f"can cross-react with your declared {allergy} allergy",
                                 severity=Severity(related.get("severity", "moderate")),
+                                position=ingredient.position,
                                 source_of_rule="cross_reactant",
                             )
                         )
@@ -199,6 +215,7 @@ class PersonalRiskMatcher:
                                 display_name=ingredient.display_name or ingredient.raw_token,
                                 reason=f"{reason} — relevant to your {condition_key}",
                                 severity=severity,
+                                position=ingredient.position,
                                 source_of_rule=f"condition:{condition_key}",
                             )
                         )
@@ -220,6 +237,7 @@ class PersonalRiskMatcher:
                             display_name=ingredient.display_name or ingredient.raw_token,
                             reason=reason,
                             severity=severity,
+                            position=ingredient.position,
                             source_of_rule="pregnancy",
                         )
                     )
@@ -244,6 +262,7 @@ class PersonalRiskMatcher:
                                 display_name=ingredient.display_name or ingredient.raw_token,
                                 reason=f"{reason} — you have set a {diet} preference",
                                 severity=Severity.MODERATE,
+                                position=ingredient.position,
                                 source_of_rule=f"diet:{diet}",
                             )
                         )

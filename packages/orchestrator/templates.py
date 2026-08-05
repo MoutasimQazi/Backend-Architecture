@@ -387,7 +387,14 @@ def product_blocks(analysis: "ProductAnalysis") -> list[AnswerBlock]:
                 "restricted_in": hazard.restricted_in if hazard else [],
                 "caveat": hazard.concentration_caveat if hazard else None,
                 "rules_fired": hazard.rule_ids if hazard else [],
-                "personal_flags": [f.reason for f in flags_by_id.get(ingredient.chemical_id or "", [])],
+                # Keyed on position, not chemical_id. Unresolved ingredients
+                # all share an empty chemical_id, so keying on it rendered one
+                # ingredient's allergy warning against every unresolved row.
+                "personal_flags": [
+                    f.reason
+                    for f in analysis.personal_flags
+                    if f.position == ingredient.position
+                ],
             }
         )
 

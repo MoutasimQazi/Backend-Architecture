@@ -307,12 +307,6 @@ class ProductAnalyzer:
         keys = [a.lower().strip() for a in context.medical.allergies if a]
         return self.chemicals.cross_reactants(keys)
 
-    @staticmethod
-    def _research_priority_for_test(
-        unresolved: list[ResolvedIngredient],
-    ) -> list[ResolvedIngredient]:
-        return _research_priority(unresolved)
-
     def _enqueue_research(self, unresolved: list[ResolvedIngredient]) -> list[str]:
         job_ids: list[str] = []
         for ingredient in _research_priority(unresolved)[:10]:

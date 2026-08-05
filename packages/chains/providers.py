@@ -58,6 +58,18 @@ PRICING: dict[str, tuple[float, float]] = {
     # still price correctly when replayed.
     "deepseek-chat": (0.27, 1.10),
     "deepseek-reasoner": (0.55, 2.19),
+    "deepseek-v4-flash": (0.14, 0.28),
+}
+
+# Input tokens the provider served from its own prompt cache, per 1M.
+#
+# Priced separately because the gap is 50x: $0.14 on a miss, $0.0028 on a hit.
+# Every chain here sends a fixed system prompt ahead of a short user message,
+# so cache hits are the normal case rather than an optimisation — charging all
+# input at the miss rate would report costs several times higher than the
+# invoice, which is the wrong direction to be wrong about spend.
+CACHED_INPUT_PRICING: dict[str, float] = {
+    "deepseek-v4-flash": 0.0028,
 }
 
 # Models that spend completion tokens on hidden reasoning before emitting any
@@ -102,6 +114,8 @@ class Completion:
     model: str = ""
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    # Subset of prompt_tokens the provider served from its prompt cache.
+    cached_prompt_tokens: int = 0
     finish_reason: Optional[str] = None
     latency_ms: float = 0.0
     # Normalised to plain dicts so callers never touch the SDK's own types —
@@ -121,8 +135,19 @@ class Completion:
                 self.model,
             )
         rate_in, rate_out = PRICING.get(self.model, (0.0, 0.0))
+
+        # Split the input between cache hits and misses where the provider
+        # reports it. `cached_prompt_tokens` is a subset of `prompt_tokens`,
+        # so the miss count is the remainder — clamped, because trusting an
+        # upstream field to be consistent is how a negative cost appears.
+        cached = max(0, min(self.cached_prompt_tokens, self.prompt_tokens))
+        fresh = self.prompt_tokens - cached
+        cached_rate = CACHED_INPUT_PRICING.get(self.model, rate_in)
+
         return round(
-            (self.prompt_tokens * rate_in + self.completion_tokens * rate_out) / 1_000_000, 8
+            (fresh * rate_in + cached * cached_rate + self.completion_tokens * rate_out)
+            / 1_000_000,
+            8,
         )
 
     def to_cost(self, node: str) -> TokenCost:
@@ -171,6 +196,30 @@ class _CircuitBreaker:
 _breakers: dict[str, _CircuitBreaker] = {}
 _clients: dict[str, Any] = {}
 _lock = threading.Lock()
+
+
+def _cached_prompt_tokens(usage: Any) -> int:
+    """Prompt tokens the provider served from its cache, if it says.
+
+    Two spellings in the wild: DeepSeek reports `prompt_cache_hit_tokens` at
+    the top of usage, OpenAI nests `cached_tokens` under
+    `prompt_tokens_details`. Neither is guaranteed present, and a provider that
+    reports nothing simply prices all input at the miss rate — an overstatement,
+    which is the safe direction.
+    """
+    if usage is None:
+        return 0
+
+    direct = getattr(usage, "prompt_cache_hit_tokens", None)
+    if isinstance(direct, int):
+        return max(0, direct)
+
+    details = getattr(usage, "prompt_tokens_details", None)
+    nested = getattr(details, "cached_tokens", None)
+    if isinstance(nested, int):
+        return max(0, nested)
+
+    return 0
 
 
 def _is_permanent(exc: Exception) -> bool:
@@ -406,6 +455,7 @@ def complete(
                     model=provider_model,
                     prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
                     completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
+                    cached_prompt_tokens=_cached_prompt_tokens(usage),
                     finish_reason=choice.finish_reason,
                     latency_ms=round((time.perf_counter() - started) * 1000, 2),
                     tool_calls=calls,

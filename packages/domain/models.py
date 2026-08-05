@@ -309,6 +309,15 @@ class PersonalFlag(Base):
     reason: str
     severity: Severity = Severity.INFO
     source_of_rule: str = ""
+    # Which ingredient on the panel raised this, by its position.
+    #
+    # chemical_id is not sufficient to identify it: an unresolved ingredient
+    # has no chemical_id, so grouping flags by that key put every unresolved
+    # ingredient in one bucket. A single groundnut warning was then rendered
+    # against all twelve unresolved rows including wheat flour and ferric
+    # pyrophosphate — an alert on everything, which teaches people to ignore
+    # the one that matters.
+    position: Optional[int] = None
 
 
 class ProductIdentity(Base):

@@ -136,6 +136,80 @@ def _extract_qualifiers(text: str) -> tuple[str, list[str]]:
     return stripped, qualifiers
 
 
+_OPENERS = {"(": ")", "[": "]"}
+
+
+def _split_compound(raw_part: str) -> Optional[tuple[str, str]]:
+    """(parent, inner) when this token is "Name (a, b, c)", else None.
+
+    Depth-counted rather than regex-matched, because the brackets nest. The
+    real Maggi panel reads:
+
+        Masala Tastemaker (hydrolysed groundnut protein, mixed spices,
+        Noodle powder, ..., Thickeners (508 & 412), acidity regulators
+        (501i & 500i), Sugar, ...)
+
+    A regex whose inner group excluded parentheses could not match that at
+    all, so the compound was never expanded and the groundnut stayed hidden.
+    """
+    text = raw_part.strip()
+    start = next((i for i, ch in enumerate(text) if ch in _OPENERS), -1)
+    if start <= 0:
+        return None
+
+    closer = _OPENERS[text[start]]
+    depth = 0
+    for index in range(start, len(text)):
+        char = text[index]
+        if char in _OPENERS:
+            depth += 1
+        elif char in (")", "]"):
+            depth -= 1
+            if depth == 0:
+                # The bracket must close at the very end; anything after it
+                # means this is not a simple "Name (list)" shape.
+                if text[index + 1:].strip():
+                    return None
+                if char != closer:
+                    return None
+                return text[:start].strip(), text[start + 1:index]
+    return None
+
+
+def _expand_compound(raw_part: str) -> list[str]:
+    """Split a compound ingredient into itself plus its sub-ingredients.
+
+    Real labels declare allergens inside these brackets — the seasoning,
+    tastemaker or flavour blend. Keeping only the outer name lost them
+    entirely: a Maggi noodles panel reduced to "Masala Tastemaker" with
+    "hydrolysed groundnut protein" nowhere in the parsed output, so a declared
+    peanut allergy could not fire no matter how good the matching was.
+
+    The parent is kept as well as the parts. It is a real ingredient in its own
+    right, and dropping it would lose the entry the label actually lists.
+    """
+    split = _split_compound(raw_part)
+    if split is None:
+        return [raw_part]
+
+    parent, inner = split
+    parts = [p.strip() for p in _split_top_level(inner) if p.strip()]
+
+    # A single part is not a list; leave it to the qualifier path so
+    # "Tocopherol (Vitamin E)" and "Thickeners (508 & 412)" keep their shape.
+    if len(parts) < 2:
+        return [raw_part]
+
+    # Sub-lists nest one more level ("Thickeners (508 & 412)" inside the
+    # tastemaker). Expanding recursively keeps every declared substance
+    # reachable however deeply the manufacturer buried it.
+    expanded: list[str] = [parent] if parent else []
+    for part in parts:
+        nested = _expand_compound(part)
+        expanded.extend(nested if nested != [part] else [part])
+    return expanded
+
+
 def clean_token(raw: str) -> Optional[tuple[str, list[str]]]:
     """Normalise one token. Returns None when it is not an ingredient."""
     if not raw:
@@ -161,7 +235,15 @@ def clean_token(raw: str) -> Optional[tuple[str, list[str]]]:
     if len(text.split()) > 12:
         return None
 
-    kept = [q for q in qualifiers if _KNOWN_QUALIFIERS.match(q.strip()) or len(q.split()) <= 4]
+    # Qualifiers were dropped above four words, which silently deleted
+    # "Masala Tastemaker (contains hydrolysed groundnut protein)" — the
+    # parenthetical on a compound ingredient is where allergens are declared,
+    # so length is the worst possible reason to discard it. The cap now only
+    # excludes prose that has leaked in from elsewhere on the pack.
+    kept = [
+        q for q in qualifiers
+        if _KNOWN_QUALIFIERS.match(q.strip()) or len(q.split()) <= 12
+    ]
     return text, kept
 
 
@@ -182,35 +264,40 @@ def parse_panel(panel_text: str, *, had_header: bool = False, max_tokens: int = 
     position = 0
 
     for source_text, is_trace in ((main_text, False), (trace_text, True)):
-        for raw_part in _split_top_level(source_text):
-            if not raw_part.strip():
+        for outer_part in _split_top_level(source_text):
+            if not outer_part.strip():
                 continue
 
-            cleaned = clean_token(raw_part)
-            if cleaned is None:
-                if raw_part.strip():
-                    result.dropped.append(raw_part.strip()[:80])
-                continue
+            # A compound ingredient carries its own ingredient list in
+            # brackets. Both the compound and its parts are real ingredients,
+            # so both become tokens — the parts are where allergens are
+            # actually declared.
+            for raw_part in _expand_compound(outer_part):
+                cleaned = clean_token(raw_part)
+                if cleaned is None:
+                    if raw_part.strip():
+                        result.dropped.append(raw_part.strip()[:80])
+                    continue
 
-            text_value, qualifiers = cleaned
-            key = text_value.lower()
-            if key in seen:
-                continue
-            seen.add(key)
+                text_value, qualifiers = cleaned
+                key = text_value.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
 
-            if len(result.tokens) >= max_tokens:
-                result.truncated = True
-                return result
+                if len(result.tokens) >= max_tokens:
+                    result.truncated = True
+                    return result
 
-            result.tokens.append(
-                ParsedToken(
-                    raw=raw_part.strip(),
-                    text=text_value,
-                    position=position,
-                    qualifiers=qualifiers,
-                    is_trace=is_trace,
+                result.tokens.append(
+                    ParsedToken(
+                        raw=raw_part.strip(),
+                        text=text_value,
+                        position=position,
+                        qualifiers=qualifiers,
+                        is_trace=is_trace,
+                    )
                 )
-            )
-            position += 1
+                position += 1
 
     return result

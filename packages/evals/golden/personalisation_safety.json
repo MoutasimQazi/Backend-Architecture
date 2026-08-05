@@ -2,72 +2,282 @@
   {
     "id": "declared_allergy_direct",
     "note": "the gate is 100%: a missed allergen is the failure mode that hurts someone",
-    "allergies": ["Limonene"],
-    "ingredients": ["Aqua", "Limonene", "Glycerin"],
-    "must_flag": ["Limonene"]
+    "allergies": [
+      "Limonene"
+    ],
+    "ingredients": [
+      "Aqua",
+      "Limonene",
+      "Glycerin"
+    ],
+    "must_flag": [
+      "Limonene"
+    ]
   },
   {
     "id": "declared_allergy_case_insensitive",
-    "allergies": ["limonene"],
-    "ingredients": ["LIMONENE"],
-    "must_flag": ["LIMONENE"]
+    "allergies": [
+      "limonene"
+    ],
+    "ingredients": [
+      "LIMONENE"
+    ],
+    "must_flag": [
+      "LIMONENE"
+    ]
   },
   {
     "id": "allergy_within_compound_name",
-    "allergies": ["soy"],
-    "ingredients": ["Soy Lecithin", "Aqua"],
-    "must_flag": ["Soy Lecithin"]
+    "allergies": [
+      "soy"
+    ],
+    "ingredients": [
+      "Soy Lecithin",
+      "Aqua"
+    ],
+    "must_flag": [
+      "Soy Lecithin"
+    ]
   },
   {
     "id": "no_false_positive_substring",
     "note": "'nut' must not match inside 'coconut' - false alarms train users to ignore real ones",
-    "allergies": ["nut"],
-    "ingredients": ["Coconut Oil", "Aqua"],
+    "allergies": [
+      "nut"
+    ],
+    "ingredients": [
+      "Coconut Oil",
+      "Aqua"
+    ],
     "must_flag": [],
-    "must_not_flag": ["Coconut Oil"]
+    "must_not_flag": [
+      "Coconut Oil"
+    ]
   },
   {
     "id": "unresolved_token_still_flagged",
     "note": "an ingredient we could not resolve must still be checked against allergies",
-    "allergies": ["peanut"],
-    "ingredients": ["Peanut Oil Extract"],
-    "unresolved": ["Peanut Oil Extract"],
-    "must_flag": ["Peanut Oil Extract"]
+    "allergies": [
+      "peanut"
+    ],
+    "ingredients": [
+      "Peanut Oil Extract"
+    ],
+    "unresolved": [
+      "Peanut Oil Extract"
+    ],
+    "must_flag": [
+      "Peanut Oil Extract"
+    ]
   },
   {
     "id": "pregnancy_retinoid",
     "pregnancy_status": "pregnant",
-    "ingredients": ["Retinol", "Aqua"],
-    "must_flag": ["Retinol"]
+    "ingredients": [
+      "Retinol",
+      "Aqua"
+    ],
+    "must_flag": [
+      "Retinol"
+    ]
   },
   {
     "id": "pregnancy_not_applied_when_absent",
-    "ingredients": ["Retinol", "Aqua"],
+    "ingredients": [
+      "Retinol",
+      "Aqua"
+    ],
     "must_flag": [],
-    "must_not_flag": ["Retinol"]
+    "must_not_flag": [
+      "Retinol"
+    ]
   },
   {
     "id": "celiac_gluten",
-    "conditions": ["Celiac disease"],
-    "ingredients": ["Wheat Flour", "Sugar"],
-    "must_flag": ["Wheat Flour"]
+    "conditions": [
+      "Celiac disease"
+    ],
+    "ingredients": [
+      "Wheat Flour",
+      "Sugar"
+    ],
+    "must_flag": [
+      "Wheat Flour"
+    ]
   },
   {
     "id": "vegan_gelatin",
-    "preferences": ["vegan"],
-    "ingredients": ["Gelatin", "Sugar"],
-    "must_flag": ["Gelatin"]
+    "preferences": [
+      "vegan"
+    ],
+    "ingredients": [
+      "Gelatin",
+      "Sugar"
+    ],
+    "must_flag": [
+      "Gelatin"
+    ]
   },
   {
     "id": "diabetes_maltodextrin",
-    "conditions": ["Type 2 Diabetes"],
-    "ingredients": ["Maltodextrin", "Aqua"],
-    "must_flag": ["Maltodextrin"]
+    "conditions": [
+      "Type 2 Diabetes"
+    ],
+    "ingredients": [
+      "Maltodextrin",
+      "Aqua"
+    ],
+    "must_flag": [
+      "Maltodextrin"
+    ]
   },
   {
     "id": "clean_profile_no_flags",
     "note": "no declared risks must produce no flags - noise is its own harm",
-    "ingredients": ["Aqua", "Glycerin"],
+    "ingredients": [
+      "Aqua",
+      "Glycerin"
+    ],
     "must_flag": []
+  },
+  {
+    "id": "allergen_synonym_groundnut",
+    "note": "found on a real product (Maggi Masala Noodles): 'groundnut' is peanut, and it is the standard word on Indian labels. A literal match found nothing and the scan came back clean for a peanut-allergic user.",
+    "allergies": [
+      "peanuts"
+    ],
+    "ingredients": [
+      "Wheat flour",
+      "Palm oil",
+      "hydrolysed groundnut protein",
+      "Salt"
+    ],
+    "must_flag": [
+      "hydrolysed groundnut protein"
+    ]
+  },
+  {
+    "id": "allergen_synonym_botanical",
+    "note": "INCI/botanical naming: Arachis hypogaea is peanut",
+    "allergies": [
+      "peanut"
+    ],
+    "ingredients": [
+      "Aqua",
+      "Arachis Hypogaea Oil"
+    ],
+    "must_flag": [
+      "Arachis Hypogaea Oil"
+    ]
+  },
+  {
+    "id": "allergen_synonym_hindi_nut",
+    "note": "kaju is cashew; a tree-nut allergy must fire on the local word",
+    "allergies": [
+      "tree nuts"
+    ],
+    "ingredients": [
+      "Sugar",
+      "Kaju",
+      "Ghee"
+    ],
+    "must_flag": [
+      "Kaju"
+    ]
+  },
+  {
+    "id": "allergen_synonym_milk_protein",
+    "note": "casein/whey are milk without the word milk",
+    "allergies": [
+      "milk"
+    ],
+    "ingredients": [
+      "Sugar",
+      "Sodium Caseinate",
+      "Cocoa"
+    ],
+    "must_flag": [
+      "Sodium Caseinate"
+    ]
+  },
+  {
+    "id": "allergen_synonym_wheat_maida",
+    "note": "maida/atta/suji are wheat flour on Indian labels",
+    "allergies": [
+      "gluten"
+    ],
+    "ingredients": [
+      "Maida",
+      "Sugar",
+      "Palm Oil"
+    ],
+    "must_flag": [
+      "Maida"
+    ]
+  },
+  {
+    "id": "allergen_synonym_sesame_til",
+    "note": "til and gingelly are sesame",
+    "allergies": [
+      "sesame"
+    ],
+    "ingredients": [
+      "Gingelly Oil",
+      "Salt"
+    ],
+    "must_flag": [
+      "Gingelly Oil"
+    ]
+  },
+  {
+    "id": "allergen_exclusion_cocoa_butter",
+    "note": "cocoa butter is not dairy - a false milk alert here trains users to ignore real ones",
+    "allergies": [
+      "milk"
+    ],
+    "ingredients": [
+      "Cocoa Butter",
+      "Sugar",
+      "Shea Butter"
+    ],
+    "must_flag": []
+  },
+  {
+    "id": "allergen_exclusion_eggplant",
+    "note": "eggplant is not egg",
+    "allergies": [
+      "egg"
+    ],
+    "ingredients": [
+      "Eggplant",
+      "Salt"
+    ],
+    "must_flag": []
+  },
+  {
+    "id": "allergen_exclusion_buckwheat",
+    "note": "buckwheat is not wheat and is gluten free",
+    "allergies": [
+      "wheat"
+    ],
+    "ingredients": [
+      "Buckwheat Flour",
+      "Water"
+    ],
+    "must_flag": []
+  },
+  {
+    "id": "allergen_plural_declaration",
+    "note": "users write plurals; the table lists singulars",
+    "allergies": [
+      "sulphites"
+    ],
+    "ingredients": [
+      "Sodium Metabisulphite",
+      "Sugar"
+    ],
+    "must_flag": [
+      "Sodium Metabisulphite"
+    ]
   }
 ]

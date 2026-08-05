@@ -81,9 +81,12 @@ class ProductExplainer(Chain):
 
     def _findings_payload(self, analysis: ProductAnalysis) -> dict:
         hazards = {h.chemical_id: h for h in analysis.hazards}
-        flags: dict[str, list[str]] = {}
+        flags: dict[int, list[str]] = {}
         for flag in analysis.personal_flags:
-            flags.setdefault(flag.chemical_id, []).append(flag.reason)
+            # Keyed on position: unresolved ingredients share an empty
+            # chemical_id, so keying on that merged every flag into one bucket.
+            if flag.position is not None:
+                flags.setdefault(flag.position, []).append(flag.reason)
 
         ingredients = []
         for ingredient in analysis.ingredients:
@@ -106,9 +109,27 @@ class ProductExplainer(Chain):
                     "restricted_in": hazard.restricted_in if hazard else [],
                     "banned_in": hazard.banned_in if hazard else [],
                     "concentration_caveat": hazard.concentration_caveat if hazard else None,
-                    "personal_flags": flags.get(ingredient.chemical_id or "", []),
+                    "personal_flags": flags.get(ingredient.position, []),
                 }
             )
+
+        # Personal flags travel at the top level as well, covering EVERY
+        # ingredient including unrecognised ones.
+        #
+        # Unrecognised ingredients are otherwise kept out of the prompt so the
+        # model cannot invent hazard data for a bare name. A personal flag is
+        # the opposite case: it is a rule-derived fact with its own wording,
+        # and withholding it produced an answer that said "Not recommended for
+        # you" and then "none of these raised any personal flags" — the verdict
+        # and its own explanation contradicting each other, on an allergy.
+        personal_flags = [
+            {
+                "ingredient": flag.display_name,
+                "reason": flag.reason,
+                "severity": str(flag.severity.value),
+            }
+            for flag in analysis.personal_flags
+        ]
 
         return {
             "verdict_already_decided": str(analysis.verdict.value),
@@ -116,6 +137,7 @@ class ProductExplainer(Chain):
             "total_ingredients": len(analysis.ingredients),
             "unrecognised_count": analysis.unresolved_count,
             "ingredients": ingredients,
+            "personal_flags": personal_flags,
         }
 
     @staticmethod
@@ -128,11 +150,17 @@ class ProductExplainer(Chain):
         never sees it — a guard that only flags after the fact still shipped
         the wrong text.
         """
+        # An ingredient carrying a personal flag counts as known even when the
+        # Chemical KB could not resolve it. Restricting this to resolved
+        # ingredients dropped the note explaining a critical allergy — the
+        # guard exists to remove substances the model invented, not to delete
+        # the one finding the reader most needs.
+        flagged = {f.display_name.lower() for f in analysis.personal_flags if f.display_name}
         known = {
             (i.display_name or i.raw_token).lower()
             for i in analysis.ingredients
             if i.resolved
-        }
+        } | flagged
         kept = []
         for note in explanation.ingredient_notes:
             if note.name.lower() in known:

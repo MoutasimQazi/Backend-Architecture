@@ -2,52 +2,94 @@
   {
     "id": "simple_panel",
     "panel": "Ingredients: Aqua, Glycerin, Phenoxyethanol.",
-    "expect_tokens": ["Aqua", "Glycerin", "Phenoxyethanol"]
+    "expect_tokens": [
+      "Aqua",
+      "Glycerin",
+      "Phenoxyethanol"
+    ]
   },
   {
     "id": "nested_parenthetical",
-    "note": "the comma inside brackets must not split the token",
+    "note": "CORRECTED. This previously expected ['CI 77491','Aqua'] — i.e. that the bracketed list be discarded. That deleted Titanium Dioxide, which is IARC group 2B and one of the hazards the rules engine exists to catch. The comma must not split the token at the TOP level (it does not), but the bracketed list is a sub-ingredient list and each part is a real ingredient.",
     "panel": "Ingredients: CI 77491 (Iron Oxides, Titanium Dioxide), Aqua",
-    "expect_tokens": ["CI 77491", "Aqua"]
+    "expect_tokens": [
+      "CI 77491",
+      "Iron Oxides",
+      "Titanium Dioxide",
+      "Aqua"
+    ]
   },
   {
     "id": "percentages_stripped",
     "panel": "Ingredients: Aqua 60%, Glycerin 5%, Niacinamide 10%",
-    "expect_tokens": ["Aqua", "Glycerin", "Niacinamide"]
+    "expect_tokens": [
+      "Aqua",
+      "Glycerin",
+      "Niacinamide"
+    ]
   },
   {
     "id": "numbering_stripped",
     "panel": "Ingredients: 1. Aqua, 2. Glycerin, 3. Parfum",
-    "expect_tokens": ["Aqua", "Glycerin", "Parfum"]
+    "expect_tokens": [
+      "Aqua",
+      "Glycerin",
+      "Parfum"
+    ]
   },
   {
     "id": "duplicates_removed_order_kept",
     "note": "INCI order carries concentration meaning, so order must survive dedupe",
     "panel": "Ingredients: Aqua, Glycerin, Aqua, Parfum",
-    "expect_tokens": ["Aqua", "Glycerin", "Parfum"]
+    "expect_tokens": [
+      "Aqua",
+      "Glycerin",
+      "Parfum"
+    ]
   },
   {
     "id": "traces_separated",
     "panel": "Ingredients: Wheat Flour, Sugar. May contain traces of Peanuts, Milk",
-    "expect_tokens": ["Wheat Flour", "Sugar", "Peanuts", "Milk"],
-    "expect_traces": ["Peanuts", "Milk"]
+    "expect_tokens": [
+      "Wheat Flour",
+      "Sugar",
+      "Peanuts",
+      "Milk"
+    ],
+    "expect_traces": [
+      "Peanuts",
+      "Milk"
+    ]
   },
   {
     "id": "boilerplate_dropped",
     "panel": "Ingredients: Aqua, Glycerin, and other ingredients, list subject to change",
-    "expect_tokens": ["Aqua", "Glycerin"]
+    "expect_tokens": [
+      "Aqua",
+      "Glycerin"
+    ]
   },
   {
     "id": "bare_digits_dropped",
     "panel": "Ingredients: Aqua, 12345, Glycerin",
-    "expect_tokens": ["Aqua", "Glycerin"]
+    "expect_tokens": [
+      "Aqua",
+      "Glycerin"
+    ]
   },
   {
     "id": "qualifier_retained",
     "note": "the common name in brackets is a resolver fallback, not noise",
     "panel": "Ingredients: Tocopherol (Vitamin E), Aqua",
-    "expect_tokens": ["Tocopherol", "Aqua"],
-    "expect_qualifiers": {"Tocopherol": ["Vitamin E"]}
+    "expect_tokens": [
+      "Tocopherol",
+      "Aqua"
+    ],
+    "expect_qualifiers": {
+      "Tocopherol": [
+        "Vitamin E"
+      ]
+    }
   },
   {
     "id": "empty_panel",
@@ -57,6 +99,47 @@
   {
     "id": "semicolon_separated",
     "panel": "Ingredients: Aqua; Glycerin; Parfum",
-    "expect_tokens": ["Aqua", "Glycerin", "Parfum"]
+    "expect_tokens": [
+      "Aqua",
+      "Glycerin",
+      "Parfum"
+    ]
+  },
+  {
+    "id": "compound_sub_ingredients",
+    "note": "real Maggi panel. The bracketed list on a compound ingredient is where allergens are declared; keeping only 'Masala Tastemaker' deleted the groundnut entirely.",
+    "panel": "Ingredients: Wheat flour, Palm oil, Salt, Masala Tastemaker (hydrolysed groundnut protein, mixed spices, onion powder)",
+    "expect_tokens": [
+      "Wheat flour",
+      "Palm oil",
+      "Salt",
+      "Masala Tastemaker",
+      "hydrolysed groundnut protein",
+      "mixed spices",
+      "onion powder"
+    ]
+  },
+  {
+    "id": "compound_parfum_allergens",
+    "note": "EU-26 fragrance allergens are declared inside Parfum; they must become their own tokens",
+    "panel": "Ingredients: Aqua, Glycerin, Parfum (Limonene, Linalool, Citral)",
+    "expect_tokens": [
+      "Aqua",
+      "Glycerin",
+      "Parfum",
+      "Limonene",
+      "Linalool",
+      "Citral"
+    ]
+  },
+  {
+    "id": "qualifier_not_split_without_comma",
+    "note": "a bracketed pair naming one thing stays a qualifier, not two ingredients",
+    "panel": "Ingredients: Aqua, Thickeners (508 & 412), Tocopherol (Vitamin E)",
+    "expect_tokens": [
+      "Aqua",
+      "Thickeners",
+      "Tocopherol"
+    ]
   }
 ]
